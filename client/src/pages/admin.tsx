@@ -5,6 +5,8 @@ import { useAuth } from "@/context/auth-context";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StatsCards from "@/components/admin/stats-cards";
 import UserTable from "@/components/admin/user-table";
+import ChatsTable from "@/components/admin/chats-table";
+import SessionsTable from "@/components/admin/sessions-table";
 
 export default function AdminPage() {
   const { user, isAuthenticated, loading, logout } = useAuth();
@@ -28,6 +30,18 @@ export default function AdminPage() {
   const { data: usersData, isLoading: usersLoading } = useQuery({
     queryKey: ["/api/admin/users"],
     enabled: isAuthenticated && user?.isAdmin && activeTab === "users",
+  });
+
+  // Получение списка чатов
+  const { data: chatsData, isLoading: chatsLoading } = useQuery({
+    queryKey: ["/api/admin/chats"],
+    enabled: isAuthenticated && user?.isAdmin && activeTab === "chats",
+  });
+
+  // Получение списка сессий
+  const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
+    queryKey: ["/api/admin/sessions"],
+    enabled: isAuthenticated && user?.isAdmin && activeTab === "sessions",
   });
 
   // Получение логов
