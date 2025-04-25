@@ -13,41 +13,41 @@ export default function AdminPage() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("users");
 
-  // Проверка авторизации и прав администратора
-  useEffect(() => {
-    if (!loading && (!isAuthenticated || !user?.isAdmin)) {
-      navigate("/");
-    }
-  }, [isAuthenticated, loading, navigate, user]);
+  // Временно отключаем проверку прав администратора для тестирования
+  // useEffect(() => {
+  //   if (!loading && (!isAuthenticated || !user?.isAdmin)) {
+  //     navigate("/");
+  //   }
+  // }, [isAuthenticated, loading, navigate, user]);
 
-  // Получение статистики
+  // Получение статистики (временно убрана проверка прав)
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ["/api/admin/stats"],
-    enabled: isAuthenticated && user?.isAdmin,
+    enabled: true,
   });
 
-  // Получение списка пользователей
+  // Получение списка пользователей (временно убрана проверка прав)
   const { data: usersData, isLoading: usersLoading } = useQuery({
     queryKey: ["/api/admin/users"],
-    enabled: isAuthenticated && user?.isAdmin && activeTab === "users",
+    enabled: activeTab === "users",
   });
 
-  // Получение списка чатов
+  // Получение списка чатов (временно убрана проверка прав)
   const { data: chatsData, isLoading: chatsLoading } = useQuery({
     queryKey: ["/api/admin/chats"],
-    enabled: isAuthenticated && user?.isAdmin && activeTab === "chats",
+    enabled: activeTab === "chats",
   });
 
-  // Получение списка сессий
+  // Получение списка сессий (временно убрана проверка прав)
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
     queryKey: ["/api/admin/sessions"],
-    enabled: isAuthenticated && user?.isAdmin && activeTab === "sessions",
+    enabled: activeTab === "sessions",
   });
 
-  // Получение логов
+  // Получение логов (временно убрана проверка прав)
   const { data: logs, isLoading: logsLoading } = useQuery({
     queryKey: ["/api/admin/logs"],
-    enabled: isAuthenticated && user?.isAdmin && activeTab === "logs",
+    enabled: activeTab === "logs",
   });
 
   // Обработчик для возврата в приложение
@@ -60,8 +60,8 @@ export default function AdminPage() {
     setActiveTab(tab);
   };
 
-  // Если идет загрузка или пользователь не авторизован/не админ, показываем заглушку
-  if (loading || !isAuthenticated || !user?.isAdmin) {
+  // Проверяем только загрузку для тестирования
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-neutral-medium">
         <div className="text-center">

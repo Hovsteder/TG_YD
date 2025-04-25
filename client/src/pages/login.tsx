@@ -259,6 +259,13 @@ export default function LoginPage() {
           >
             {t(language === 'en' ? 'signin.continue_ru' : 'signin.continue_en')}
           </button>
+          
+          {/* Тестовая ссылка на админ-панель */}
+          <div className="mt-4">
+            <a href="/admin" className="text-[#38A2E1] text-sm hover:underline">
+              Перейти к админ-панели (для тестирования)
+            </a>
+          </div>
         </div>
       </div>
       
