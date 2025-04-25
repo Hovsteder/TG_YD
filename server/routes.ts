@@ -26,6 +26,11 @@ const twoFACodeSchema = z.object({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Эндпоинт для проверки работоспособности приложения
+  app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+  
   // Настройка сессий
   app.use(session({
     secret: process.env.SESSION_SECRET || randomBytes(32).toString('hex'),

@@ -9,7 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgres://postgres:postgres@db:5432/telegram_app
-      - SESSION_SECRET=your_secure_session_secret_here
+      - SESSION_SECRET=${SESSION_SECRET:-your_secure_session_secret_here}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - VITE_TELEGRAM_BOT_ID=${VITE_TELEGRAM_BOT_ID}
     depends_on:
@@ -18,6 +18,12 @@ services:
       - ./logs:/app/logs
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   db:
     image: postgres:16-alpine
@@ -32,9 +38,31 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  pgadmin:
+    image: dpage/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - app-network
 
 volumes:
   postgres_data:
+  pgadmin_data:
 
 networks:
   app-network:

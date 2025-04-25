@@ -34,7 +34,8 @@ docker-compose up -d --build
 # Инициализация базы данных
 echo "Initializing database (this may take a moment)..."
 sleep 10 # Даем базе время на запуск
-docker-compose exec app npm run db:push
+docker-compose exec app chmod +x init-db.sh
+docker-compose exec app ./init-db.sh
 
 echo "Deployment completed successfully!"
 echo "Your application is now running at http://localhost:5000"
