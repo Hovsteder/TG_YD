@@ -5,6 +5,8 @@ import StatsCards from "@/components/admin/stats-cards";
 import UserTable from "@/components/admin/user-table";
 import ChatsTable from "@/components/admin/chats-table";
 import SessionsTable from "@/components/admin/sessions-table";
+import PasswordForm from "@/components/admin/password-form";
+import SettingsForm from "@/components/admin/settings-form";
 import { useAuth } from "@/context/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";

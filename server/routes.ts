@@ -63,15 +63,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.status(401).json({ message: 'Не авторизован' });
   };
 
-  // Middleware для проверки прав администратора (временно отключен для тестирования)
+  // Middleware для проверки прав администратора
   const isAdmin = (req: Request, res: Response, next: any) => {
-    // Пропускаем проверку на администратора
-    return next();
+    // Проверка авторизации через заголовок Admin-Authorization
+    const adminToken = req.headers['admin-authorization'] as string;
     
-    // if (req.isAuthenticated() && req.user && (req.user as any).isAdmin) {
-    //   return next();
-    // }
-    // res.status(403).json({ message: 'Доступ запрещен' });
+    if (adminToken) {
+      // Проверяем токен администратора
+      storage.getSession(adminToken)
+        .then(session => {
+          if (session) {
+            // Получаем данные пользователя по ID из сессии
+            return storage.getUser(session.userId);
+          }
+          return null;
+        })
+        .then(user => {
+          if (user && user.isAdmin) {
+            (req as any).adminUser = user;
+            next();
+          } else {
+            res.status(403).json({ message: 'Доступ запрещен' });
+          }
+        })
+        .catch(err => {
+          console.error('Admin auth error:', err);
+          res.status(500).json({ message: 'Ошибка авторизации' });
+        });
+      return;
+    }
+    
+    // Проверка обычной авторизации через сессию
+    if (req.isAuthenticated() && req.user && (req.user as any).isAdmin) {
+      return next();
+    }
+    
+    // Временно отключена проверка на администратора (для тестирования)
+    // return next();
+    
+    res.status(403).json({ message: 'Доступ запрещен' });
   };
 
   // API маршруты
