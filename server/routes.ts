@@ -564,6 +564,177 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // 6. Авторизация администратора по логину и паролю
+  app.post('/api/admin/login', async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      
+      if (!username || !password) {
+        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
+      }
+
+      // Проверка пользователя admin в базе
+      const user = await storage.getUserByUsername(username);
+      
+      if (!user) {
+        // Создаем админа при первом входе, если его нет
+        if (username === 'admin' && password === 'admin') {
+          const newAdmin = await storage.createUser({
+            telegramId: 'admin',
+            username: 'admin',
+            firstName: 'Administrator',
+            password: 'admin',
+            isAdmin: true,
+            lastLogin: new Date()
+          });
+          
+          // Создаем сессию для администратора
+          const sessionToken = randomBytes(32).toString('hex');
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
+          
+          await storage.createSession({
+            userId: newAdmin.id,
+            sessionToken,
+            ipAddress: req.ip || null,
+            userAgent: req.headers['user-agent'] || null,
+            expiresAt
+          });
+          
+          await storage.createLog({
+            userId: newAdmin.id,
+            action: 'admin_created',
+            details: { username },
+            ipAddress: req.ip
+          });
+          
+          return res.json({
+            success: true,
+            user: {
+              id: newAdmin.id,
+              username: newAdmin.username,
+              isAdmin: newAdmin.isAdmin
+            },
+            sessionToken
+          });
+        }
+        
+        return res.status(401).json({ message: 'Неверное имя пользователя или пароль' });
+      }
+      
+      // Проверка пароля
+      if (user.password !== password) {
+        return res.status(401).json({ message: 'Неверное имя пользователя или пароль' });
+      }
+      
+      // Создаем сессию
+      const sessionToken = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
+      
+      await storage.createSession({
+        userId: user.id,
+        sessionToken,
+        ipAddress: req.ip || null,
+        userAgent: req.headers['user-agent'] || null,
+        expiresAt
+      });
+      
+      await storage.createLog({
+        userId: user.id,
+        action: 'admin_login',
+        details: { username },
+        ipAddress: req.ip
+      });
+      
+      res.json({
+        success: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          isAdmin: user.isAdmin
+        },
+        sessionToken
+      });
+    } catch (error) {
+      console.error('Admin login error:', error);
+      res.status(500).json({ message: 'Ошибка авторизации' });
+    }
+  });
+
+  // 7. Изменение пароля администратора
+  app.post('/api/admin/change-password', isAdmin, async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      const user = req.user as any;
+      
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
+      }
+      
+      // Получаем актуальные данные пользователя
+      const dbUser = await storage.getUser(user.id);
+      
+      if (!dbUser) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      // Проверяем текущий пароль
+      if (dbUser.password !== currentPassword) {
+        return res.status(401).json({ message: 'Неверный текущий пароль' });
+      }
+      
+      // Обновляем пароль
+      await storage.updateUserPassword(user.id, newPassword);
+      
+      await storage.createLog({
+        userId: user.id,
+        action: 'admin_password_change',
+        details: { },
+        ipAddress: req.ip
+      });
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({ message: 'Ошибка изменения пароля' });
+    }
+  });
+
+  // 8. Получение настроек системы
+  app.get('/api/admin/settings', isAdmin, async (req, res) => {
+    try {
+      const settingsList = await storage.listSettings();
+      res.json(settingsList);
+    } catch (error) {
+      console.error('Settings fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения настроек' });
+    }
+  });
+
+  // 9. Обновление настройки
+  app.post('/api/admin/settings', isAdmin, async (req, res) => {
+    try {
+      const { key, value, description } = req.body;
+      
+      if (!key || value === undefined) {
+        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
+      }
+      
+      const setting = await storage.upsertSetting(key, value, description);
+      
+      await storage.createLog({
+        userId: (req.user as any).id,
+        action: 'setting_update',
+        details: { key, value },
+        ipAddress: req.ip
+      });
+      
+      res.json(setting);
+    } catch (error) {
+      console.error('Setting update error:', error);
+      res.status(500).json({ message: 'Ошибка обновления настройки' });
+    }
+  });
+
   // Создание HTTP сервера
   const httpServer = createServer(app);
 

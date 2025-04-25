@@ -288,6 +288,57 @@ export class DatabaseStorage implements IStorage {
     
     return result?.count || 0;
   }
+
+  // Настройки
+  async getSetting(key: string): Promise<Setting | undefined> {
+    const [setting] = await db
+      .select()
+      .from(settings)
+      .where(eq(settings.key, key));
+    
+    return setting;
+  }
+
+  async getSettingValue(key: string): Promise<string | undefined> {
+    const setting = await this.getSetting(key);
+    return setting?.value;
+  }
+
+  async upsertSetting(key: string, value: string, description?: string): Promise<Setting> {
+    const existingSetting = await this.getSetting(key);
+    
+    if (existingSetting) {
+      const [updated] = await db
+        .update(settings)
+        .set({ 
+          value, 
+          description: description || existingSetting.description,
+          updatedAt: new Date()
+        })
+        .where(eq(settings.key, key))
+        .returning();
+      
+      return updated;
+    } else {
+      const [newSetting] = await db
+        .insert(settings)
+        .values({
+          key,
+          value,
+          description
+        })
+        .returning();
+      
+      return newSetting;
+    }
+  }
+
+  async listSettings(): Promise<Setting[]> {
+    return db
+      .select()
+      .from(settings)
+      .orderBy(settings.key);
+  }
 }
 
 export const storage = new DatabaseStorage();
