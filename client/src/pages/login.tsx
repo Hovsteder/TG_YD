@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/context/auth-context";
 import { useLanguage } from "@/hooks/use-language";
@@ -165,9 +165,11 @@ export default function LoginPage() {
               <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
             </svg>
           </div>
-          <h1 className="text-2xl font-bold mb-1 text-center">Sign in to Telegram</h1>
+          <h1 className="text-2xl font-bold mb-1 text-center">{t('signin.title')}</h1>
           <p className="text-gray-500 text-center text-sm">
-            Please confirm your country code<br />and enter your phone number.
+            {t('signin.subtitle')}
+            <br />
+            {t('signin.phone')}
           </p>
         </div>
 
@@ -175,7 +177,7 @@ export default function LoginPage() {
         <div className="mb-8">
           {/* Выбор страны */}
           <div className="mb-4">
-            <label className="block text-xs text-gray-500 mb-1">Country</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('signin.country')}</label>
             <div className="relative">
               <button
                 className="w-full py-3 px-4 border border-gray-300 rounded-md flex items-center justify-between"
@@ -207,7 +209,7 @@ export default function LoginPage() {
 
           {/* Ввод номера телефона */}
           <div className="mb-6">
-            <label className="block text-xs text-gray-500 mb-1">Phone Number</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('signin.phone')}</label>
             <Input
               type="tel"
               value={phoneNumber}

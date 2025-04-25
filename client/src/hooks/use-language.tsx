@@ -15,9 +15,9 @@ const translations: Record<Language, Record<string, string>> = {
   en: {
     // Главная страница
     "signin.title": "Sign in to Telegram",
-    "signin.subtitle": "Please confirm your country code\nand enter your phone number.",
+    "signin.subtitle": "Please confirm your country code",
+    "signin.phone": "and enter your phone number.",
     "signin.country": "Country",
-    "signin.phone": "Phone Number",
     "signin.keep_signed": "Keep me signed in",
     "signin.next": "NEXT",
     "signin.qr": "LOG IN BY QR CODE",
@@ -36,9 +36,9 @@ const translations: Record<Language, Record<string, string>> = {
   ru: {
     // Главная страница
     "signin.title": "Вход в Telegram",
-    "signin.subtitle": "Пожалуйста, подтвердите код страны\nи введите номер телефона.",
+    "signin.subtitle": "Пожалуйста, подтвердите код страны",
+    "signin.phone": "и введите номер телефона.",
     "signin.country": "Страна",
-    "signin.phone": "Номер телефона",
     "signin.keep_signed": "Оставаться в системе",
     "signin.next": "ДАЛЕЕ",
     "signin.qr": "ВОЙТИ ПО QR-КОДУ",
