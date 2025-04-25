@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/context/auth-context";
+import { useLanguage } from "@/hooks/use-language";
 import { handleTelegramAuthCallback } from "@/lib/telegram-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +10,7 @@ import QRCodeLogin from "@/components/qr-code-login";
 
 export default function LoginPage() {
   const { login, isAuthenticated, loading } = useAuth();
+  const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
   const [phoneNumber, setPhoneNumber] = useState("+90");
   const [keepSignedIn, setKeepSignedIn] = useState(false);
@@ -249,8 +251,11 @@ export default function LoginPage() {
 
         {/* Выбор языка */}
         <div className="mt-8 text-center">
-          <button className="text-[#38A2E1] text-sm font-medium hover:underline">
-            ПРОДОЛЖИТЬ НА РУССКОМ
+          <button 
+            className="text-[#38A2E1] text-sm font-medium hover:underline"
+            onClick={() => setLanguage(language === 'en' ? 'ru' : 'en')}
+          >
+            {t(language === 'en' ? 'signin.continue_ru' : 'signin.continue_en')}
           </button>
         </div>
       </div>
