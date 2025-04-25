@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 20 14.3% 4.1%;
+  --muted: 60 4.8% 95.9%;
+  --muted-foreground: 25 5.3% 44.7%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 20 14.3% 4.1%;
+  --card: 0 0% 100%;
+  --card-foreground: 20 14.3% 4.1%;
+  --border: 20 5.9% 90%;
+  --input: 20 5.9% 90%;
+  --primary: 207 90% 54%; /* Telegram blue */
+  --primary-foreground: 211 100% 99%;
+  --secondary: 60 4.8% 95.9%;
+  --secondary-foreground: 24 9.8% 10%;
+  --accent: 60 4.8% 95.9%;
+  --accent-foreground: 24 9.8% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 60 9.1% 97.8%;
+  --ring: 20 14.3% 4.1%;
+  --radius: 0.5rem;
+
+  /* Дополнительные цвета для Telegram UI */
+  --telegram-blue: 202 100% 40%; /* #0088CC */
+  --telegram-dark: 202 100% 30%; /* #006699 */
+  --telegram-light: 206 80% 96%; /* #EEF6FC */
+  --neutral-light: 0 0% 96%; /* #F5F5F5 */
+  --neutral-medium: 0 0% 93%; /* #EEEEEE */
+  --neutral-gray: 0 0% 62%; /* #9E9E9E */
+  --neutral-dark: 0 0% 13%; /* #212121 */
+  --status-green: 122 41% 49%; /* #4CAF50 */
+  --status-red: 4 90% 58%; /* #F44336 */
+  --status-yellow: 45 100% 51%; /* #FFC107 */
+}
+
+.dark {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --primary: 207 90% 54%; /* Telegram blue */
+  --primary-foreground: 211 100% 99%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 240 4.9% 83.9%;
+
+  /* Дополнительные цвета для Telegram UI в темной теме */
+  --telegram-blue: 202 100% 40%; /* #0088CC */
+  --telegram-dark: 202 100% 25%; /* Darker in dark mode */
+  --telegram-light: 206 25% 20%; /* Darker in dark mode */
+  --neutral-light: 0 0% 15%; /* Darker in dark mode */
+  --neutral-medium: 0 0% 20%; /* Darker in dark mode */
+  --neutral-gray: 0 0% 70%; /* Lighter in dark mode */
+  --neutral-dark: 0 0% 95%; /* Lighter in dark mode */
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-[#f5f5f5] text-neutral-dark;
+  }
+}
+
+/* Стили для материальных иконок */
+.material-icons {
+  font-family: 'Material Icons';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Дополнительные стили для приложения */
+.bg-telegram-blue {
+  background-color: hsl(var(--telegram-blue));
+}
+
+.bg-telegram-dark {
+  background-color: hsl(var(--telegram-dark));
+}
+
+.bg-telegram-light {
+  background-color: hsl(var(--telegram-light));
+}
+
+.bg-neutral-light {
+  background-color: hsl(var(--neutral-light));
+}
+
+.bg-neutral-medium {
+  background-color: hsl(var(--neutral-medium));
+}
+
+.text-telegram-blue {
+  color: hsl(var(--telegram-blue));
+}
+
+.text-telegram-dark {
+  color: hsl(var(--telegram-dark));
+}
+
+.text-neutral-gray {
+  color: hsl(var(--neutral-gray));
+}
+
+.text-neutral-dark {
+  color: hsl(var(--neutral-dark));
+}
+
+.text-status-green {
+  color: hsl(var(--status-green));
+}
+
+.text-status-red {
+  color: hsl(var(--status-red));
+}
+
+.text-status-yellow {
+  color: hsl(var(--status-yellow));
+}
+
+.hover\:bg-telegram-dark:hover {
+  background-color: hsl(var(--telegram-dark));
+}
+
+.border-telegram-blue {
+  border-color: hsl(var(--telegram-blue));
+}
