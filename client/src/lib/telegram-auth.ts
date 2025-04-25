@@ -28,17 +28,21 @@ interface WindowWithTelegram extends Window {
 export const initTelegramAuth = async (callback: TelegramAuthCallback): Promise<void> => {
   // Загрузка скрипта Telegram Login Widget, если его еще нет
   if (!(window as WindowWithTelegram).Telegram?.Login) {
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://telegram.org/js/telegram-widget.js?22';
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = (error) => reject(new Error(`Failed to load Telegram Login Widget: ${error}`));
-      document.head.appendChild(script);
-    }).then(() => {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://telegram.org/js/telegram-widget.js?22';
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = (error) => reject(new Error(`Failed to load Telegram Login Widget: ${error}`));
+        document.head.appendChild(script);
+      });
+      
       // После загрузки скрипта инициализируем авторизацию
       initTelegramLoginWidget(callback);
-    });
+    } catch (error) {
+      console.error("Ошибка загрузки Telegram Login Widget:", error);
+    }
   } else {
     // Если скрипт уже загружен, просто инициализируем виджет
     initTelegramLoginWidget(callback);
@@ -51,10 +55,10 @@ const initTelegramLoginWidget = (callback: TelegramAuthCallback): void => {
   
   if (telegramWindow.Telegram?.Login) {
     // Получаем ID бота из переменных окружения
-    const botId = process.env.TELEGRAM_BOT_ID || '';
+    const botId = import.meta.env.VITE_TELEGRAM_BOT_ID || '';
     
     if (!botId) {
-      console.error('TELEGRAM_BOT_ID не указан в переменных окружения');
+      console.error('VITE_TELEGRAM_BOT_ID не указан в переменных окружения');
       return;
     }
     
@@ -72,10 +76,10 @@ const initTelegramLoginWidget = (callback: TelegramAuthCallback): void => {
 // Функция для прямой авторизации (без виджета)
 export const loginWithTelegram = (): void => {
   // Получаем ID бота из переменных окружения
-  const botId = process.env.TELEGRAM_BOT_ID || '';
+  const botId = import.meta.env.VITE_TELEGRAM_BOT_ID || '';
   
   if (!botId) {
-    console.error('TELEGRAM_BOT_ID не указан в переменных окружения');
+    console.error('VITE_TELEGRAM_BOT_ID не указан в переменных окружения');
     return;
   }
   
