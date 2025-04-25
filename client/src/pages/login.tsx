@@ -227,7 +227,7 @@ export default function LoginPage() {
               className="h-4 w-4 border-gray-300 rounded text-[#38A2E1]"
             />
             <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-600">
-              Keep me signed in
+              {t('signin.keep_signed')}
             </label>
           </div>
 
@@ -237,7 +237,7 @@ export default function LoginPage() {
             onClick={handleNext}
             disabled={loading || phoneNumber.length < 5}
           >
-            NEXT
+            {t('signin.next')}
           </Button>
         </div>
 
@@ -247,7 +247,7 @@ export default function LoginPage() {
             className="text-[#38A2E1] text-sm font-semibold uppercase hover:underline"
             onClick={handleLoginByQRCode}
           >
-            LOG IN BY QR CODE
+            {t('signin.qr')}
           </button>
         </div>
 
