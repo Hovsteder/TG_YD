@@ -333,7 +333,7 @@ export class DatabaseStorage implements IStorage {
 
   async getSettingValue(key: string): Promise<string | undefined> {
     const setting = await this.getSetting(key);
-    return setting?.value;
+    return setting?.value || undefined;
   }
 
   async upsertSetting(key: string, value: string, description?: string): Promise<Setting> {

@@ -109,12 +109,7 @@ export default function AdminLoginPage() {
           </div>
         </form>
 
-        <div className="mt-6 text-center text-sm">
-          <p className="text-gray-500">
-            По умолчанию: имя пользователя <span className="font-semibold">admin</span>,{" "}
-            пароль <span className="font-semibold">admin</span>
-          </p>
-        </div>
+
       </div>
     </div>
   );
