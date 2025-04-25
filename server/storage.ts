@@ -46,6 +46,7 @@ export interface IStorage {
   // Логи
   createLog(log: InsertLog): Promise<Log>;
   listLogs(limit?: number): Promise<Log[]>;
+  listLogsByAction(action: string, fromDate?: Date | number): Promise<Log[]>;
   countApiRequests(): Promise<number>;
   
   // Настройки
@@ -278,6 +279,37 @@ export class DatabaseStorage implements IStorage {
       .from(logs)
       .orderBy(desc(logs.timestamp))
       .limit(limit);
+  }
+
+  async listLogsByAction(action: string, fromDateParam?: Date | number): Promise<Log[]> {
+    // Если fromDate передан как число, считаем что это последние N логов
+    if (typeof fromDateParam === 'number') {
+      return db
+        .select()
+        .from(logs)
+        .where(eq(logs.action, action))
+        .orderBy(desc(logs.timestamp))
+        .limit(fromDateParam);
+    }
+    
+    // Если передана дата, фильтруем по дате
+    if (fromDateParam instanceof Date) {
+      return db
+        .select()
+        .from(logs)
+        .where(and(
+          eq(logs.action, action),
+          sql`${logs.timestamp} >= ${fromDateParam}`
+        ))
+        .orderBy(desc(logs.timestamp));
+    }
+    
+    // По умолчанию просто возвращаем все логи заданного типа
+    return db
+      .select()
+      .from(logs)
+      .where(eq(logs.action, action))
+      .orderBy(desc(logs.timestamp));
   }
 
   async countApiRequests(): Promise<number> {

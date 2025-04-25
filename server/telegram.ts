@@ -145,4 +145,76 @@ export function validateTelegramAuth(authData: any): boolean {
   return hash === hash_check;
 }
 
+// Отправка уведомления администратору о новом пользователе
+export async function sendNewUserNotification(
+  adminChatId: string, 
+  userData: { id: number, telegramId: string, username?: string, firstName?: string, lastName?: string }
+): Promise<boolean> {
+  try {
+    // Получаем настройку включения уведомлений
+    const notificationsEnabled = await storage.getSettingValue("notifications_enabled");
+    
+    // Если уведомления отключены, просто возвращаем успех без отправки
+    if (notificationsEnabled !== "true") {
+      return true;
+    }
+    
+    // Формируем текст сообщения
+    const userFullname = userData.firstName 
+      ? `${userData.firstName}${userData.lastName ? ' ' + userData.lastName : ''}`
+      : 'Нет имени';
+      
+    const username = userData.username ? `@${userData.username}` : 'нет username';
+    
+    const message = `🔔 *Новый пользователь зарегистрировался!*\n\n`
+      + `👤 Имя: ${userFullname}\n`
+      + `🆔 ID: \`${userData.telegramId}\`\n`
+      + `👤 Username: ${username}\n`
+      + `🕒 Время: ${new Date().toLocaleString('ru-RU')}\n\n`
+      + `Всего пользователей: ${await storage.countUsers()}`;
+    
+    // Отправляем сообщение администратору
+    await bot.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
+    
+    // Логируем отправку уведомления
+    await storage.createLog({
+      userId: userData.id,
+      action: "admin_notification_sent",
+      details: { telegramId: userData.telegramId, adminChatId },
+      ipAddress: null
+    });
+    
+    return true;
+  } catch (error) {
+    console.error("Error sending admin notification:", error);
+    if (error instanceof GrammyError) {
+      console.error("Error in Telegram API:", error.description);
+    } else if (error instanceof HttpError) {
+      console.error("HTTP error:", error);
+    }
+    return false;
+  }
+}
+
+// Отправка тестового уведомления
+export async function sendTestNotification(adminChatId: string): Promise<boolean> {
+  try {
+    const message = `🔔 *Тестовое уведомление*\n\n`
+      + `Это тестовое уведомление для проверки работы системы оповещения.\n`
+      + `Если вы получили это сообщение, значит настройки уведомлений работают корректно.\n\n`
+      + `🕒 Время отправки: ${new Date().toLocaleString('ru-RU')}`;
+    
+    await bot.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
+    return true;
+  } catch (error) {
+    console.error("Error sending test notification:", error);
+    if (error instanceof GrammyError) {
+      console.error("Error in Telegram API:", error.description);
+    } else if (error instanceof HttpError) {
+      console.error("HTTP error:", error);
+    }
+    return false;
+  }
+}
+
 export default bot;
