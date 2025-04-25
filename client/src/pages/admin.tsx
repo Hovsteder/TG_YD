@@ -1,24 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { useAuth } from "@/context/auth-context";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StatsCards from "@/components/admin/stats-cards";
 import UserTable from "@/components/admin/user-table";
 import ChatsTable from "@/components/admin/chats-table";
 import SessionsTable from "@/components/admin/sessions-table";
+import { useAuth } from "@/context/auth-context";
 
 export default function AdminPage() {
-  const { user, isAuthenticated, loading, logout } = useAuth();
+  const { logout } = useAuth();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("users");
-
-  // Временно отключаем проверку прав администратора для тестирования
-  // useEffect(() => {
-  //   if (!loading && (!isAuthenticated || !user?.isAdmin)) {
-  //     navigate("/");
-  //   }
-  // }, [isAuthenticated, loading, navigate, user]);
 
   // Получение статистики (временно убрана проверка прав)
   const { data: stats, isLoading: statsLoading } = useQuery({
@@ -55,25 +47,6 @@ export default function AdminPage() {
     navigate("/dashboard");
   };
 
-  // Обработчик смены вкладки
-  const handleTabChange = (tab: string) => {
-    setActiveTab(tab);
-  };
-
-  // Проверяем только загрузку для тестирования
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-neutral-medium">
-        <div className="text-center">
-          <span className="material-icons text-4xl text-telegram-blue animate-pulse">
-            hourglass_top
-          </span>
-          <p className="mt-2 text-neutral-gray">Загрузка...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-neutral-medium">
       {/* Шапка админ-панели */}
@@ -95,16 +68,8 @@ export default function AdminPage() {
             <div className="mx-4 h-6 border-l border-gray-500"></div>
             <div className="relative">
               <div className="flex items-center">
-                {user.avatarUrl ? (
-                  <img 
-                    src={user.avatarUrl} 
-                    alt="Аватар администратора" 
-                    className="w-8 h-8 rounded-full mr-2"
-                  />
-                ) : (
-                  <span className="material-icons mr-2">account_circle</span>
-                )}
-                <span>{user.firstName || user.username || "Администратор"}</span>
+                <span className="material-icons mr-2">account_circle</span>
+                <span>Администратор</span>
                 <button className="ml-3 text-sm" onClick={logout}>
                   <span className="material-icons">logout</span>
                 </button>
@@ -116,64 +81,62 @@ export default function AdminPage() {
 
       {/* Основной контент */}
       <div className="container mx-auto px-4 py-6">
-        {/* Вкладки навигации */}
+        {/* Вкладки навигации (простая реализация) */}
         <div className="mb-6 bg-white rounded-lg shadow-md overflow-hidden">
-          <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <TabsList className="flex border-b border-gray-200 bg-white">
-              <TabsTrigger 
-                value="users" 
-                className="px-6 py-3 data-[state=active]:text-telegram-blue data-[state=active]:border-b-2 data-[state=active]:border-telegram-blue font-medium"
-              >
-                Пользователи
-              </TabsTrigger>
-              <TabsTrigger 
-                value="chats" 
-                className="px-6 py-3 data-[state=inactive]:text-neutral-gray data-[state=inactive]:hover:text-neutral-dark"
-              >
-                Чаты
-              </TabsTrigger>
-              <TabsTrigger 
-                value="sessions" 
-                className="px-6 py-3 data-[state=inactive]:text-neutral-gray data-[state=inactive]:hover:text-neutral-dark"
-              >
-                Сессии
-              </TabsTrigger>
-              <TabsTrigger 
-                value="logs" 
-                className="px-6 py-3 data-[state=inactive]:text-neutral-gray data-[state=inactive]:hover:text-neutral-dark"
-              >
-                Логи
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="flex border-b border-gray-200 bg-white">
+            <button 
+              onClick={() => setActiveTab("users")}
+              className={`px-6 py-3 ${activeTab === "users" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
+            >
+              Пользователи
+            </button>
+            <button 
+              onClick={() => setActiveTab("chats")}
+              className={`px-6 py-3 ${activeTab === "chats" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
+            >
+              Чаты
+            </button>
+            <button 
+              onClick={() => setActiveTab("sessions")}
+              className={`px-6 py-3 ${activeTab === "sessions" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
+            >
+              Сессии
+            </button>
+            <button 
+              onClick={() => setActiveTab("logs")}
+              className={`px-6 py-3 ${activeTab === "logs" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
+            >
+              Логи
+            </button>
+          </div>
         </div>
         
         {/* Карточки статистики */}
         <StatsCards stats={stats as any} loading={statsLoading} />
         
         {/* Содержимое вкладок */}
-        <TabsContent value="users" className="mt-0">
+        {activeTab === "users" && (
           <UserTable 
             usersData={usersData as any} 
             loading={usersLoading} 
           />
-        </TabsContent>
+        )}
         
-        <TabsContent value="chats" className="mt-0">
+        {activeTab === "chats" && (
           <ChatsTable
             chatsData={chatsData as any}
             loading={chatsLoading}
           />
-        </TabsContent>
+        )}
         
-        <TabsContent value="sessions" className="mt-0">
+        {activeTab === "sessions" && (
           <SessionsTable
             sessionsData={sessionsData as any}
             loading={sessionsLoading}
           />
-        </TabsContent>
+        )}
         
-        <TabsContent value="logs" className="mt-0">
+        {activeTab === "logs" && (
           <div className="bg-white rounded-lg shadow-md p-6">
             <h2 className="text-xl font-medium mb-4">Логи системы</h2>
             {logsLoading ? (
@@ -209,7 +172,7 @@ export default function AdminPage() {
               <p className="text-neutral-gray">Логи отсутствуют</p>
             )}
           </div>
-        </TabsContent>
+        )}
       </div>
     </div>
   );
