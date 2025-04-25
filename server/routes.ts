@@ -794,6 +794,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: 'Ошибка обновления настройки' });
     }
   });
+  
+  // 10. Отправка тестового уведомления администратору
+  app.post('/api/admin/send-test-notification', isAdmin, async (req, res) => {
+    try {
+      // Получаем настройки уведомлений
+      const notificationsEnabled = await storage.getSettingValue("notifications_enabled");
+      const adminChatId = await storage.getSettingValue("admin_chat_id");
+      
+      // Проверяем наличие необходимых настроек
+      if (notificationsEnabled !== "true") {
+        return res.status(400).json({ message: 'Уведомления отключены в настройках' });
+      }
+      
+      if (!adminChatId) {
+        return res.status(400).json({ message: 'Не указан ID чата администратора' });
+      }
+      
+      // Импортируем функцию для отправки тестового уведомления
+      const { sendTestNotification } = await import('./telegram');
+      
+      // Отправляем тестовое уведомление
+      const success = await sendTestNotification(adminChatId);
+      
+      if (success) {
+        // Создаем лог об отправке тестового уведомления
+        await storage.createLog({
+          userId: (req.user as any).id,
+          action: 'test_notification_sent',
+          details: { adminChatId },
+          ipAddress: req.ip
+        });
+        
+        res.json({ success: true, message: 'Тестовое уведомление отправлено' });
+      } else {
+        throw new Error('Не удалось отправить тестовое уведомление');
+      }
+    } catch (error) {
+      console.error('Admin test notification error:', error);
+      res.status(500).json({ message: 'Ошибка отправки тестового уведомления' });
+    }
+  });
 
   // Создание HTTP сервера
   const httpServer = createServer(app);
