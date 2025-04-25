@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import StatsCards from "@/components/admin/stats-cards";
@@ -6,40 +6,78 @@ import UserTable from "@/components/admin/user-table";
 import ChatsTable from "@/components/admin/chats-table";
 import SessionsTable from "@/components/admin/sessions-table";
 import { useAuth } from "@/context/auth-context";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 export default function AdminPage() {
   const { logout } = useAuth();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("users");
+  const [adminData, setAdminData] = useState<any>(null);
+  const { toast } = useToast();
+  
+  // Проверка авторизации администратора
+  useEffect(() => {
+    const adminToken = localStorage.getItem("admin_token");
+    const adminUser = localStorage.getItem("admin_user");
+    
+    if (!adminToken || !adminUser) {
+      navigate("/admin/login");
+      return;
+    }
+    
+    setAdminData(JSON.parse(adminUser));
+  }, [navigate]);
+  
+  // Выход из админ-панели
+  const handleAdminLogout = () => {
+    localStorage.removeItem("admin_token");
+    localStorage.removeItem("admin_user");
+    toast({
+      title: "Выход выполнен",
+      description: "Вы вышли из панели администратора",
+    });
+    navigate("/admin/login");
+  };
 
-  // Получение статистики (временно убрана проверка прав)
+  const adminToken = localStorage.getItem("admin_token");
+  const headers = {
+    "Admin-Authorization": adminToken || ""
+  };
+  
+  // Получение статистики с авторизацией
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ["/api/admin/stats"],
-    enabled: true,
+    enabled: !!adminData,
+    meta: { headers }
   });
 
-  // Получение списка пользователей (временно убрана проверка прав)
+  // Получение списка пользователей с авторизацией
   const { data: usersData, isLoading: usersLoading } = useQuery({
     queryKey: ["/api/admin/users"],
-    enabled: activeTab === "users",
+    enabled: !!adminData && activeTab === "users",
+    meta: { headers }
   });
 
-  // Получение списка чатов (временно убрана проверка прав)
+  // Получение списка чатов с авторизацией
   const { data: chatsData, isLoading: chatsLoading } = useQuery({
     queryKey: ["/api/admin/chats"],
-    enabled: activeTab === "chats",
+    enabled: !!adminData && activeTab === "chats",
+    meta: { headers }
   });
 
-  // Получение списка сессий (временно убрана проверка прав)
+  // Получение списка сессий с авторизацией
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
     queryKey: ["/api/admin/sessions"],
-    enabled: activeTab === "sessions",
+    enabled: !!adminData && activeTab === "sessions",
+    meta: { headers }
   });
 
-  // Получение логов (временно убрана проверка прав)
+  // Получение логов с авторизацией
   const { data: logs, isLoading: logsLoading } = useQuery({
     queryKey: ["/api/admin/logs"],
-    enabled: activeTab === "logs",
+    enabled: !!adminData && activeTab === "logs",
+    meta: { headers }
   });
 
   // Обработчик для возврата в приложение
@@ -69,8 +107,8 @@ export default function AdminPage() {
             <div className="relative">
               <div className="flex items-center">
                 <span className="material-icons mr-2">account_circle</span>
-                <span>Администратор</span>
-                <button className="ml-3 text-sm" onClick={logout}>
+                <span>{adminData?.username || "Администратор"}</span>
+                <button className="ml-3 text-sm" onClick={handleAdminLogout}>
                   <span className="material-icons">logout</span>
                 </button>
               </div>

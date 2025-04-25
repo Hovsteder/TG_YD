@@ -9,6 +9,7 @@ import LoginPage from "@/pages/login";
 import SecurityPage from "@/pages/security";
 import DashboardPage from "@/pages/dashboard";
 import AdminPage from "@/pages/admin";
+import AdminLoginPage from "@/pages/admin-login";
 import NotFound from "@/pages/not-found";
 import { useEffect } from "react";
 
@@ -18,6 +19,7 @@ function Router() {
       <Route path="/" component={LoginPage} />
       <Route path="/security" component={SecurityPage} />
       <Route path="/dashboard" component={DashboardPage} />
+      <Route path="/admin/login" component={AdminLoginPage} />
       <Route path="/admin" component={AdminPage} />
       <Route component={NotFound} />
     </Switch>
