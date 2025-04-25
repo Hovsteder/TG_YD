@@ -65,6 +65,10 @@ export default function SessionsTable({ sessionsData, loading }: SessionsTablePr
   const terminateSessionMutation = useMutation({
     mutationFn: async (sessionToken: string) => {
       const response = await apiRequest("POST", `/api/admin/sessions/${sessionToken}/terminate`);
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(JSON.stringify(error));
+      }
       return response.json();
     },
     onSuccess: () => {
