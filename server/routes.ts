@@ -398,17 +398,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: 'Ошибка получения статистики' });
     }
   });
-
-  // 3. Получение логов
+  
+  // 3. Получение логов системы
   app.get('/api/admin/logs', isAdmin, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
+      
       const logs = await storage.listLogs(limit);
       
       res.json(logs);
     } catch (error) {
       console.error('Admin logs fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения логов' });
+      res.status(500).json({ message: 'Ошибка получения логов системы' });
     }
   });
 
