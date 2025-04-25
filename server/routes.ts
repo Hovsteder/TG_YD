@@ -137,6 +137,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
           details: { telegram_id: authData.id },
           ipAddress: req.ip
         });
+        
+        // Отправляем уведомление администратору о новом пользователе
+        try {
+          const adminChatId = await storage.getSettingValue("admin_chat_id");
+          const notificationsEnabled = await storage.getSettingValue("notifications_enabled");
+          
+          if (notificationsEnabled === "true" && adminChatId) {
+            const { sendNewUserNotification } = await import('./telegram');
+            await sendNewUserNotification(adminChatId, {
+              id: user.id,
+              telegramId: user.telegramId,
+              username: user.username || undefined,
+              firstName: user.firstName || undefined,
+              lastName: user.lastName || undefined
+            });
+          }
+        } catch (notificationError) {
+          console.error("Failed to send admin notification:", notificationError);
+          // Не выбрасываем ошибку, чтобы не прерывать процесс регистрации
+        }
       } else {
         // Обновляем данные существующего пользователя
         user = await storage.updateUser(user.id, {
