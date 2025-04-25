@@ -382,7 +382,7 @@ export default function ChatsTable({ chatsData, loading }: ChatsTableProps) {
                   </div>
                 ))}
               </div>
-            ) : messages && messages.length > 0 ? (
+            ) : messages && Array.isArray(messages) && messages.length > 0 ? (
               <div className="flex flex-col space-y-3 p-4">
                 {messages.map((message: Message) => (
                   <div key={message.id} className={`flex ${message.isIncoming ? 'justify-start' : 'justify-end'}`}>

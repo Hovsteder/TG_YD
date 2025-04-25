@@ -354,7 +354,7 @@ export default function SessionsTable({ sessionsData, loading }: SessionsTablePr
               <PaginationItem>
                 <PaginationNext
                   onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-                  disabled={currentPage === totalPages}
+                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : ""}
                 />
               </PaginationItem>
             </PaginationContent>

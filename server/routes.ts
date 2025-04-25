@@ -5,11 +5,11 @@ import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats 
 import { z } from "zod";
 import { randomBytes } from "crypto";
 import session from "express-session";
-import { insertUserSchema, insertSessionSchema } from "@shared/schema";
+import { insertUserSchema, insertSessionSchema, messages, sessions, chats } from "@shared/schema";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, count } from "drizzle-orm";
 
 // Определение схем валидации для API запросов
 const telegramAuthSchema = z.object({
@@ -459,6 +459,136 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Admin sessions fetch error:', error);
       res.status(500).json({ message: 'Ошибка получения сессий' });
+    }
+  });
+  
+  // 6. Получение списка всех сессий
+  app.get('/api/admin/sessions', isAdmin, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = parseInt(req.query.offset as string) || 0;
+      
+      const sessions = await db.query.sessions.findMany({
+        limit,
+        offset,
+        with: {
+          user: {
+            columns: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              avatarUrl: true
+            }
+          }
+        },
+        orderBy: (sessions, { desc }) => [desc(sessions.createdAt)]
+      });
+      
+      const total = await db.select({ count: count() }).from(sessions);
+      
+      res.json({
+        sessions,
+        pagination: {
+          total: total[0].count,
+          limit,
+          offset
+        }
+      });
+    } catch (error) {
+      console.error('Admin sessions fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения сессий' });
+    }
+  });
+  
+  // 7. Завершение сессии
+  app.post('/api/admin/sessions/:token/terminate', isAdmin, async (req, res) => {
+    try {
+      const { token } = req.params;
+      
+      await storage.deleteSession(token);
+      
+      // Создаем лог о завершении сессии
+      const adminUser = req.user as any;
+      await storage.createLog({
+        userId: adminUser.id,
+        action: 'session_terminated',
+        details: { sessionToken: token },
+        ipAddress: req.ip
+      });
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Admin terminate session error:', error);
+      res.status(500).json({ message: 'Ошибка завершения сессии' });
+    }
+  });
+  
+  // 8. Получение всех чатов для админа
+  app.get('/api/admin/chats', isAdmin, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = parseInt(req.query.offset as string) || 0;
+      
+      const chatsWithUsers = await db.query.chats.findMany({
+        limit,
+        offset,
+        with: {
+          user: {
+            columns: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              avatarUrl: true
+            }
+          }
+        },
+        orderBy: (chats, { desc }) => [desc(chats.updatedAt)]
+      });
+      
+      // Получаем количество сообщений для каждого чата
+      const chatsWithMessageCounts = await Promise.all(
+        chatsWithUsers.map(async (chat) => {
+          const count = await db.select({ count: count() })
+            .from(messages)
+            .where(eq(messages.chatId, chat.id));
+          
+          return {
+            ...chat,
+            messagesCount: count[0].count
+          };
+        })
+      );
+      
+      const total = await db.select({ count: count() }).from(chats);
+      
+      res.json({
+        chats: chatsWithMessageCounts,
+        pagination: {
+          total: total[0].count,
+          limit,
+          offset
+        }
+      });
+    } catch (error) {
+      console.error('Admin chats fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения чатов' });
+    }
+  });
+  
+  // 9. Получение сообщений чата для админа
+  app.get('/api/admin/chats/:id/messages', isAdmin, async (req, res) => {
+    try {
+      const chatId = parseInt(req.params.id);
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const messagesData = await storage.listChatMessages(chatId, limit);
+      
+      res.json(messagesData);
+    } catch (error) {
+      console.error('Admin chat messages fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения сообщений чата' });
     }
   });
 

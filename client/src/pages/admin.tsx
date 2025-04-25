@@ -149,28 +149,28 @@ export default function AdminPage() {
         </div>
         
         {/* Карточки статистики */}
-        <StatsCards stats={stats} loading={statsLoading} />
+        <StatsCards stats={stats as any} loading={statsLoading} />
         
         {/* Содержимое вкладок */}
         <TabsContent value="users" className="mt-0">
           <UserTable 
-            usersData={usersData} 
+            usersData={usersData as any} 
             loading={usersLoading} 
           />
         </TabsContent>
         
         <TabsContent value="chats" className="mt-0">
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-medium mb-4">Чаты пользователей</h2>
-            <p className="text-neutral-gray">Информация о чатах будет доступна в ближайшее время</p>
-          </div>
+          <ChatsTable
+            chatsData={chatsData as any}
+            loading={chatsLoading}
+          />
         </TabsContent>
         
         <TabsContent value="sessions" className="mt-0">
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-medium mb-4">Сессии пользователей</h2>
-            <p className="text-neutral-gray">Информация о сессиях будет доступна в ближайшее время</p>
-          </div>
+          <SessionsTable
+            sessionsData={sessionsData as any}
+            loading={sessionsLoading}
+          />
         </TabsContent>
         
         <TabsContent value="logs" className="mt-0">
@@ -178,7 +178,7 @@ export default function AdminPage() {
             <h2 className="text-xl font-medium mb-4">Логи системы</h2>
             {logsLoading ? (
               <p className="text-neutral-gray">Загрузка логов...</p>
-            ) : logs && logs.length > 0 ? (
+            ) : logs && Array.isArray(logs) && logs.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="min-w-full">
                   <thead>
@@ -191,7 +191,7 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {logs.map((log) => (
+                    {logs.map((log: any) => (
                       <tr key={log.id} className="hover:bg-neutral-light">
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">{log.id}</td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">{log.userId || 'Система'}</td>
