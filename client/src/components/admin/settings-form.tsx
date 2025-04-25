@@ -29,15 +29,19 @@ export default function SettingsForm() {
   // Получение списка настроек
   const { data: settings, isLoading: settingsLoading } = useQuery<Setting[]>({
     queryKey: ["/api/admin/settings"],
-    meta: { headers },
-    onSuccess: (data) => {
+    meta: { headers }
+  });
+  
+  // Обновляем значение токена бота при получении настроек
+  useEffect(() => {
+    if (settings) {
       // Находим настройку для токена бота
-      const botTokenSetting = data.find(s => s.key === "telegram_bot_token");
+      const botTokenSetting = settings.find(setting => setting.key === "telegram_bot_token");
       if (botTokenSetting) {
         setTelegramBotToken(botTokenSetting.value);
       }
     }
-  });
+  }, [settings]);
 
   const handleUpdateBotToken = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,6 +58,10 @@ export default function SettingsForm() {
     setLoading(true);
     
     try {
+      const headers = {
+        "Admin-Authorization": adminToken || ""
+      };
+      
       const response = await apiRequest(
         "POST", 
         "/api/admin/settings", 
@@ -62,11 +70,7 @@ export default function SettingsForm() {
           value: telegramBotToken,
           description: "Токен бота Telegram для отправки 2FA кодов"
         },
-        {
-          headers: {
-            "Admin-Authorization": adminToken || ""
-          }
-        }
+        headers
       );
       
       if (response.ok) {

@@ -11,10 +11,19 @@ export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
+  headers?: Record<string, string>,
 ): Promise<Response> {
+  const defaultHeaders: Record<string, string> = data 
+    ? { "Content-Type": "application/json" } 
+    : {};
+    
+  const requestHeaders = headers 
+    ? { ...defaultHeaders, ...headers } 
+    : defaultHeaders;
+    
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: requestHeaders,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
@@ -28,8 +37,12 @@ export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
-  async ({ queryKey }) => {
+  async ({ queryKey, meta }) => {
+    // Извлекаем заголовки из meta, если они есть
+    const headers = meta?.headers ? { ...meta.headers } : {};
+    
     const res = await fetch(queryKey[0] as string, {
+      headers,
       credentials: "include",
     });
 

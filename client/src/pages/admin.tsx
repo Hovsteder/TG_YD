@@ -148,6 +148,12 @@ export default function AdminPage() {
             >
               Логи
             </button>
+            <button 
+              onClick={() => setActiveTab("settings")}
+              className={`px-6 py-3 ${activeTab === "settings" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
+            >
+              Настройки
+            </button>
           </div>
         </div>
         
@@ -211,6 +217,13 @@ export default function AdminPage() {
             ) : (
               <p className="text-neutral-gray">Логи отсутствуют</p>
             )}
+          </div>
+        )}
+        
+        {activeTab === "settings" && (
+          <div className="space-y-6">
+            <PasswordForm />
+            <SettingsForm />
           </div>
         )}
       </div>

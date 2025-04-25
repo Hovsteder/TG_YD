@@ -51,6 +51,10 @@ export default function PasswordForm({ onSuccess }: PasswordFormProps) {
       // Получаем токен из localStorage
       const adminToken = localStorage.getItem("admin_token");
       
+      const headers = {
+        "Admin-Authorization": adminToken || ""
+      };
+      
       const response = await apiRequest(
         "POST", 
         "/api/admin/change-password", 
@@ -58,11 +62,7 @@ export default function PasswordForm({ onSuccess }: PasswordFormProps) {
           currentPassword,
           newPassword
         },
-        {
-          headers: {
-            "Admin-Authorization": adminToken || ""
-          }
-        }
+        headers
       );
       
       if (response.ok) {
