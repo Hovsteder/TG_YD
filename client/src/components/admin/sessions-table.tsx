@@ -64,7 +64,17 @@ export default function SessionsTable({ sessionsData, loading }: SessionsTablePr
   // Мутация для завершения сессии
   const terminateSessionMutation = useMutation({
     mutationFn: async (sessionToken: string) => {
-      const response = await apiRequest("POST", `/api/admin/sessions/${sessionToken}/terminate`);
+      // Добавляем админский токен в заголовки запроса
+      const adminToken = localStorage.getItem('admin_token');
+      const headers = adminToken ? { 'Admin-Authorization': adminToken } : {};
+      
+      const response = await apiRequest(
+        "POST", 
+        `/api/admin/sessions/${sessionToken}/terminate`,
+        undefined,
+        headers
+      );
+      
       if (!response.ok) {
         const error = await response.json();
         throw new Error(JSON.stringify(error));
