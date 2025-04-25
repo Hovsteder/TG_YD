@@ -1,10 +1,11 @@
 import { 
-  users, sessions, chats, messages, logs,
+  users, sessions, chats, messages, logs, settings,
   type User, type InsertUser,
   type Session, type InsertSession,
   type Chat, type InsertChat,
   type Message, type InsertMessage,
-  type Log, type InsertLog
+  type Log, type InsertLog,
+  type Setting, type InsertSetting
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, inArray } from "drizzle-orm";
@@ -14,8 +15,10 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByTelegramId(telegramId: string): Promise<User | undefined>;
   getUserBySessionToken(sessionToken: string): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined>;
+  updateUserPassword(id: number, password: string): Promise<User | undefined>;
   listUsers(limit?: number, offset?: number): Promise<User[]>;
   countUsers(): Promise<number>;
   listAdmins(): Promise<User[]>;
@@ -44,6 +47,12 @@ export interface IStorage {
   createLog(log: InsertLog): Promise<Log>;
   listLogs(limit?: number): Promise<Log[]>;
   countApiRequests(): Promise<number>;
+  
+  // Настройки
+  getSetting(key: string): Promise<Setting | undefined>;
+  getSettingValue(key: string): Promise<string | undefined>;
+  upsertSetting(key: string, value: string, description?: string): Promise<Setting>;
+  listSettings(): Promise<Setting[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -98,6 +107,25 @@ export class DatabaseStorage implements IStorage {
       .from(users);
     
     return result?.count || 0;
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, username));
+    
+    return user;
+  }
+
+  async updateUserPassword(id: number, password: string): Promise<User | undefined> {
+    const [updatedUser] = await db
+      .update(users)
+      .set({ password })
+      .where(eq(users.id, id))
+      .returning();
+    
+    return updatedUser;
   }
 
   async listAdmins(): Promise<User[]> {

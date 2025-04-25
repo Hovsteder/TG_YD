@@ -12,6 +12,7 @@ export const users = pgTable("users", {
   lastName: text("last_name"),
   avatarUrl: text("avatar_url"),
   twoFaCode: text("two_fa_code"),
+  password: text("password"),
   isActive: boolean("is_active").default(true),
   isAdmin: boolean("is_admin").default(false),
   lastLogin: timestamp("last_login"),
@@ -66,6 +67,15 @@ export const logs = pgTable("logs", {
   timestamp: timestamp("timestamp").defaultNow(),
 });
 
+// Настройки системы
+export const settings = pgTable("settings", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  value: text("value"),
+  description: text("description"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // Схемы для создания и валидации данных
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
@@ -91,6 +101,11 @@ export const insertLogSchema = createInsertSchema(logs).omit({
   timestamp: true,
 });
 
+export const insertSettingSchema = createInsertSchema(settings).omit({
+  id: true,
+  updatedAt: true,
+});
+
 // Типы для TypeScript
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -106,6 +121,9 @@ export type InsertMessage = z.infer<typeof insertMessageSchema>;
 
 export type Log = typeof logs.$inferSelect;
 export type InsertLog = z.infer<typeof insertLogSchema>;
+
+export type Setting = typeof settings.$inferSelect;
+export type InsertSetting = z.infer<typeof insertSettingSchema>;
 
 // Определение отношений между таблицами
 export const usersRelations = relations(users, ({ many }) => ({
