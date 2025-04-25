@@ -25,6 +25,7 @@ export interface IStorage {
   getSession(token: string): Promise<Session | undefined>;
   deleteSession(token: string): Promise<void>;
   listUserSessions(userId: number): Promise<Session[]>;
+  listAllSessions(limit?: number, offset?: number): Promise<Session[]>;
   countActiveSessions(): Promise<number>;
   
   // Чаты
@@ -32,6 +33,7 @@ export interface IStorage {
   getChatByIds(userId: number, chatId: string): Promise<Chat | undefined>;
   updateChat(id: number, data: Partial<InsertChat>): Promise<Chat | undefined>;
   listUserChats(userId: number, limit?: number): Promise<Chat[]>;
+  listAllChats(limit?: number, offset?: number): Promise<Chat[]>;
   countChats(): Promise<number>;
   
   // Сообщения
@@ -134,6 +136,22 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(sessions.createdAt));
   }
 
+  async listAllSessions(limit = 20, offset = 0): Promise<Session[]> {
+    const sessionsData = await db
+      .select()
+      .from(sessions)
+      .leftJoin(users, eq(sessions.userId, users.id))
+      .orderBy(desc(sessions.createdAt))
+      .limit(limit)
+      .offset(offset);
+    
+    // Преобразуем результат к нужному формату
+    return sessionsData.map(result => ({
+      ...result.sessions,
+      user: result.users
+    }));
+  }
+  
   async countActiveSessions(): Promise<number> {
     const now = new Date();
     const [result] = await db
@@ -181,6 +199,22 @@ export class DatabaseStorage implements IStorage {
       .limit(limit);
   }
 
+  async listAllChats(limit = 20, offset = 0): Promise<Chat[]> {
+    const chatsData = await db
+      .select()
+      .from(chats)
+      .leftJoin(users, eq(chats.userId, users.id))
+      .orderBy(desc(chats.lastUpdated))
+      .limit(limit)
+      .offset(offset);
+    
+    // Преобразуем результат к нужному формату
+    return chatsData.map(result => ({
+      ...result.chats,
+      user: result.users
+    }));
+  }
+  
   async countChats(): Promise<number> {
     const [result] = await db
       .select({ count: sql<number>`count(*)` })

@@ -468,29 +468,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(req.query.limit as string) || 20;
       const offset = parseInt(req.query.offset as string) || 0;
       
-      const sessions = await db.query.sessions.findMany({
-        limit,
-        offset,
-        with: {
-          user: {
-            columns: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true
-            }
-          }
-        },
-        orderBy: (sessions, { desc }) => [desc(sessions.createdAt)]
-      });
-      
-      const total = await db.select({ count: count() }).from(sessions);
+      const allSessions = await storage.listAllSessions(limit, offset);
+      const totalSessions = await storage.countActiveSessions();
       
       res.json({
-        sessions,
+        sessions: allSessions,
         pagination: {
-          total: total[0].count,
+          total: totalSessions,
           limit,
           offset
         }
@@ -530,43 +514,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(req.query.limit as string) || 20;
       const offset = parseInt(req.query.offset as string) || 0;
       
-      const chatsWithUsers = await db.query.chats.findMany({
-        limit,
-        offset,
-        with: {
-          user: {
-            columns: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true
-            }
-          }
-        },
-        orderBy: (chats, { desc }) => [desc(chats.updatedAt)]
-      });
+      // Получаем все чаты и их пользователей
+      const allChats = await storage.listAllChats(limit, offset);
+      const totalChats = await storage.countChats();
       
-      // Получаем количество сообщений для каждого чата
-      const chatsWithMessageCounts = await Promise.all(
-        chatsWithUsers.map(async (chat) => {
-          const count = await db.select({ count: count() })
-            .from(messages)
-            .where(eq(messages.chatId, chat.id));
+      // Для каждого чата добавляем информацию о количестве сообщений
+      const enrichedChats = await Promise.all(
+        allChats.map(async (chat) => {
+          // Получаем сообщения для подсчета их количества
+          const chatMessages = await storage.listChatMessages(chat.id, 1000);
           
           return {
             ...chat,
-            messagesCount: count[0].count
+            messagesCount: chatMessages.length
           };
         })
       );
       
-      const total = await db.select({ count: count() }).from(chats);
-      
       res.json({
-        chats: chatsWithMessageCounts,
+        chats: enrichedChats,
         pagination: {
-          total: total[0].count,
+          total: totalChats,
           limit,
           offset
         }
