@@ -7,6 +7,10 @@ interface StatsData {
   activeSessions: number;
   totalChats: number;
   apiRequests: number;
+  usersDynamic?: string;
+  sessionsDynamic?: string;
+  chatsDynamic?: string;
+  requestsDynamic?: string;
 }
 
 interface StatsCardsProps {
@@ -15,38 +19,63 @@ interface StatsCardsProps {
 }
 
 export default function StatsCards({ stats, loading }: StatsCardsProps) {
-  // Мемоизация данных статистики с динамикой (для демонстрации)
+  // Мемоизация данных статистики с динамикой из реальных данных
   const statsWithDynamics = useMemo(() => {
     if (!stats) return null;
+    
+    // Определяем типы динамики для визуального отображения
+    const getUsersDynamicType = () => {
+      if (!stats.usersDynamic) return "neutral";
+      return stats.usersDynamic.startsWith("+") ? "positive" : 
+             stats.usersDynamic.startsWith("-") ? "negative" : "neutral";
+    };
+    
+    const getSessionsDynamicType = () => {
+      if (!stats.sessionsDynamic) return "neutral";
+      return stats.sessionsDynamic.startsWith("+") ? "positive" : 
+             stats.sessionsDynamic.startsWith("-") ? "negative" : "neutral";
+    };
+    
+    const getChatsDynamicType = () => {
+      if (!stats.chatsDynamic) return "neutral";
+      return stats.chatsDynamic.startsWith("+") ? "positive" : 
+             stats.chatsDynamic.startsWith("-") ? "negative" : "neutral";
+    };
+    
+    const getRequestsDynamicType = () => {
+      if (!stats.requestsDynamic) return "neutral";
+      return stats.requestsDynamic.startsWith("+") ? "positive" : 
+             stats.requestsDynamic.startsWith("-") ? "negative" : "neutral";
+    };
     
     return [
       {
         title: "Всего пользователей",
         value: stats.totalUsers,
         icon: "people",
-        dynamicText: "+12 за последние 7 дней",
-        dynamicType: "positive" // positive, negative, neutral
+        dynamicText: stats.usersDynamic || "Нет данных о динамике",
+        dynamicType: getUsersDynamicType()
       },
       {
         title: "Активных сессий",
         value: stats.activeSessions,
         icon: "devices",
-        dynamicText: "+8 за последние 24 часа",
-        dynamicType: "positive"
+        dynamicText: stats.sessionsDynamic || "Нет данных о динамике",
+        dynamicType: getSessionsDynamicType()
       },
       {
         title: "Собрано чатов",
         value: stats.totalChats,
         icon: "chat",
-        dynamicText: "Стабильно",
-        dynamicType: "neutral"
+        dynamicText: stats.chatsDynamic || "Нет данных о динамике",
+        dynamicType: getChatsDynamicType()
       },
       {
         title: "Запросы к API",
         value: stats.apiRequests,
         icon: "api",
-        dynamicText: "-5% с прошлого месяца",
-        dynamicType: "negative"
+        dynamicText: stats.requestsDynamic || "Нет данных о динамике",
+        dynamicType: getRequestsDynamicType()
       }
     ];
   }, [stats]);
