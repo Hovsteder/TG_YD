@@ -66,7 +66,11 @@ export default function SessionsTable({ sessionsData, loading }: SessionsTablePr
     mutationFn: async (sessionToken: string) => {
       // Добавляем админский токен в заголовки запроса
       const adminToken = localStorage.getItem('admin_token');
-      const headers = adminToken ? { 'Admin-Authorization': adminToken } : {};
+      const headers: Record<string, string> = {};
+      
+      if (adminToken) {
+        headers['Admin-Authorization'] = adminToken;
+      }
       
       const response = await apiRequest(
         "POST", 

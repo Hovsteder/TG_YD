@@ -577,13 +577,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.deleteSession(token);
       
       // Создаем лог о завершении сессии
-      const adminUser = req.user as any;
-      await storage.createLog({
-        userId: adminUser.id,
-        action: 'session_terminated',
-        details: { sessionToken: token },
-        ipAddress: req.ip
-      });
+      const adminUser = (req as any).adminUser || req.user as any;
+      
+      if (adminUser) {
+        await storage.createLog({
+          userId: adminUser.id,
+          action: 'session_terminated',
+          details: { sessionToken: token },
+          ipAddress: req.ip
+        });
+      }
       
       res.json({ success: true });
     } catch (error) {
