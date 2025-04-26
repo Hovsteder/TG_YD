@@ -1523,9 +1523,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   // Создаем сообщение в базе данных
                   const messageDate = new Date(msg.date * 1000);
                   
-                  // Проверяем, существует ли сообщение с таким telegramId
+                  // Проверяем, существует ли сообщение с таким telegramId в этом чате
                   const telegramMsgId = `${chat.chatId}_${msg.id}`;
-                  const existingMessage = await storage.getMessageByTelegramId(telegramMsgId);
+                  const existingMessage = await storage.getMessageByTelegramIdAndChatId(telegramMsgId, chat.id);
                   
                   if (!existingMessage) {
                     const newMessage = await storage.createMessage({
@@ -1536,6 +1536,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       senderName: senderName,
                       text: msg.message,
                       sentAt: messageDate,
+                      timestamp: new Date(), // Добавляем timestamp как текущее время
                       isOutgoing: msg.out || false,
                       mediaType: msg.media ? msg.media._ : null,
                       mediaUrl: null // Пока не загружаем медиа
@@ -1559,6 +1560,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     lastMessageText: latestMessage.text
                   });
                 }
+                
+                // Удаляем старые сообщения, оставляя только последние 50
+                await storage.deleteOldMessages(chat.id, 50);
                 
                 // Обновляем список сообщений
                 messages = await storage.listChatMessages(chat.id);

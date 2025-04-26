@@ -64,6 +64,7 @@ export const messages = pgTable("messages", {
   senderName: text("sender_name"),
   text: text("text"),
   sentAt: timestamp("sent_at"),
+  timestamp: timestamp("timestamp").notNull(), // Основное поле времени в БД
   isOutgoing: boolean("is_outgoing").default(false),
   mediaType: text("media_type"), // 'photo', 'video', 'document', 'audio', 'voice', etc.
   mediaUrl: text("media_url"),

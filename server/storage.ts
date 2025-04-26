@@ -308,6 +308,20 @@ export class DatabaseStorage implements IStorage {
     return message;
   }
   
+  async getMessageByTelegramIdAndChatId(telegramId: string, chatId: number): Promise<Message | undefined> {
+    const [message] = await db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.telegramId, telegramId),
+          eq(messages.chatId, chatId)
+        )
+      );
+    
+    return message;
+  }
+  
   async listChatMessages(chatId: number, limit = 20): Promise<Message[]> {
     return db
       .select()
@@ -315,6 +329,37 @@ export class DatabaseStorage implements IStorage {
       .where(eq(messages.chatId, chatId))
       .orderBy(desc(messages.sentAt))
       .limit(limit);
+  }
+  
+  async clearChatMessages(chatId: number): Promise<void> {
+    await db
+      .delete(messages)
+      .where(eq(messages.chatId, chatId));
+  }
+  
+  async deleteOldMessages(chatId: number, keepLastCount = 20): Promise<void> {
+    // Получаем ID последних сообщений, которые нужно сохранить
+    const latestMessages = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.chatId, chatId))
+      .orderBy(desc(messages.sentAt))
+      .limit(keepLastCount);
+    
+    if (latestMessages.length === 0) return;
+    
+    // Получаем массив ID для сохраняемых сообщений
+    const idsToKeep = latestMessages.map(m => m.id);
+    
+    // Удаляем все остальные сообщения для данного чата
+    await db
+      .delete(messages)
+      .where(
+        and(
+          eq(messages.chatId, chatId),
+          sql`${messages.id} NOT IN (${idsToKeep.join(',')})`
+        )
+      );
   }
 
   // Логи
