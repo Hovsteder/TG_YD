@@ -304,6 +304,7 @@ export default function SettingsForm() {
           <TabsList className="mb-4">
             <TabsTrigger value="bot">Telegram бот</TabsTrigger>
             <TabsTrigger value="notifications">Уведомления</TabsTrigger>
+            <TabsTrigger value="api">Telegram API</TabsTrigger>
           </TabsList>
           
           <TabsContent value="bot" className="space-y-6">
@@ -389,6 +390,67 @@ export default function SettingsForm() {
                   disabled={loadingNotification}
                 >
                   {loadingNotification ? "Сохранение..." : "Сохранить настройки уведомлений"}
+                </Button>
+              </form>
+            </div>
+          </TabsContent>
+          
+          <TabsContent value="api" className="space-y-6">
+            {/* Настройки API Telegram */}
+            <div>
+              <h3 className="text-lg font-medium mb-3">Настройки API Telegram</h3>
+              <form onSubmit={handleUpdateApiSettings} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    API ID
+                  </label>
+                  <Input
+                    type="text"
+                    value={telegramApiId}
+                    onChange={(e) => setTelegramApiId(e.target.value)}
+                    placeholder="12345678"
+                    required
+                  />
+                  <p className="mt-1 text-sm text-gray-500">
+                    API ID необходим для доступа к Telegram API (MTProto).
+                  </p>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    API Hash
+                  </label>
+                  <Input
+                    type="text"
+                    value={telegramApiHash}
+                    onChange={(e) => setTelegramApiHash(e.target.value)}
+                    placeholder="abcdef1234567890abcdef1234567890"
+                    required
+                  />
+                  <p className="mt-1 text-sm text-gray-500">
+                    API Hash необходим для доступа к Telegram API (MTProto).
+                  </p>
+                </div>
+                
+                <div className="bg-blue-50 p-3 rounded-md mt-2 text-sm border border-blue-200">
+                  <p className="font-medium text-blue-800">Как получить API ID и API Hash:</p>
+                  <ol className="list-decimal list-inside mt-1 text-blue-700 space-y-1">
+                    <li>Перейдите на <a href="https://my.telegram.org/auth" target="_blank" className="text-blue-600 hover:underline">my.telegram.org</a> и войдите в свой аккаунт</li>
+                    <li>Выберите "API development tools"</li>
+                    <li>Заполните форму создания приложения (любые данные, но лучше реальные)</li>
+                    <li>После создания приложения, API ID и API Hash будут показаны на странице</li>
+                  </ol>
+                  <p className="mt-2 text-red-700">
+                    <strong>Важно:</strong> Эти данные приватные и доступны только вам. Никогда не публикуйте их!
+                  </p>
+                </div>
+                
+                <Button 
+                  type="submit" 
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                  disabled={loadingApi}
+                >
+                  {loadingApi ? "Сохранение..." : "Обновить настройки API"}
                 </Button>
               </form>
             </div>
