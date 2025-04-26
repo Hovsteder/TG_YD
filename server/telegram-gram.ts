@@ -875,59 +875,123 @@ export async function getUserDialogs(limit = 5): Promise<any> {
 
 export async function getChatHistory(peer: any, limit = 20): Promise<any> {
   try {
-    // Получаем клиент Telegram
+    // Получаем клиент Telegram через API
     const currentClient = await getClient();
     
-    if (!currentClient.connected) {
+    if (!currentClient || !currentClient.connected) {
+      console.error("Failed to get connected Telegram client");
       return {
         success: false,
         error: "Not connected to Telegram API"
       };
     }
     
-    // Проверяем аутентификацию путем попытки получения данных пользователя
-    let isAuthenticated = false;
-    try {
-      // Если это вызовет ошибку, значит клиент не аутентифицирован
-      const me = await currentClient.getMe();
-      isAuthenticated = true;
-      console.log("User is authenticated for chat history:", me);
-    } catch (authError: any) {
-      console.error("Error from Telegram API: Not authenticated with Telegram API", authError?.message || "Unknown error");
-      return {
-        success: false,
-        error: "Not authenticated with Telegram API"
-      };
-    }
+    console.log(`Fetching chat history with peer:`, peer);
     
     try {
-      console.log(`Fetching chat history with peer:`, peer);
+      const Api = require("telegram").Api;
       
-      // Вместо прямого использования переданного peer, получаем правильный InputPeer через API
-      try {
-        // Преобразуем наш peer в формат, который ожидает getEntity
-        let entityId;
+      // Пробуем разные способы получения сообщений в зависимости от типа чата
+      if (peer._ === 'inputPeerChannel') {
+        console.log(`Getting channel messages for channel_id=${peer.channel_id}`);
         
-        if (peer._ === 'inputPeerUser') {
-          entityId = peer.user_id;
-          console.log(`Getting user entity for ID: ${entityId} with access_hash: ${peer.access_hash}`);
-          
-          // Пробуем получить пользователя по ID
-          const entity = await currentClient.getEntity(entityId);
-          console.log("Retrieved entity:", entity);
-          
-          // Теперь используем полученную сущность для запроса сообщений
-          const messages = await currentClient.getMessages(entity, {
-            limit: limit
+        try {
+          // Создаем InputChannel для API
+          const inputChannel = new Api.InputChannel({
+            channelId: BigInt(peer.channel_id),
+            accessHash: BigInt(peer.access_hash)
           });
-          console.log(`Retrieved ${messages.length} messages from Telegram`);
           
+          console.log("Created InputChannel:", inputChannel);
+          
+          // Получаем последние сообщения канала
+          // Соберем ID сообщений (просто последовательность от 1 до limit)
+          const messageIds = Array.from({ length: limit }, (_, i) => i + 1);
+          
+          const result = await currentClient.invoke(
+            new Api.channels.GetMessages({
+              channel: inputChannel,
+              id: messageIds,
+            })
+          );
+          
+          console.log("Channel messages result:", result);
+          
+          if (result && result.messages) {
+            // Извлекаем пользователей из ответа
+            const users = result.users || [];
+            
+            // Форматируем сообщения
+            const formattedMessages = result.messages.map((msg: any) => {
+              // Определяем отправителя
+              let from_id = null;
+              if (msg.fromId) {
+                from_id = msg.fromId;
+              }
+              
+              return {
+                _: 'message',
+                id: msg.id,
+                message: msg.message || '',
+                date: msg.date,
+                out: msg.out || false,
+                media: msg.media || null,
+                from_id: from_id
+              };
+            });
+            
+            return {
+              success: true,
+              messages: formattedMessages,
+              users: users
+            };
+          }
+        } catch (channelError) {
+          console.error("Error getting channel messages:", channelError);
+        }
+      }
+      
+      // Второй способ - через telegram.js API getMessages
+      console.log("Trying to get messages using getMessages...");
+      
+      // Выполняем запрос сущности, чтобы получить актуальный объект
+      let entityId;
+      if (peer._ === 'inputPeerUser') {
+        entityId = parseInt(peer.user_id);
+      } else if (peer._ === 'inputPeerChat') {
+        entityId = parseInt(peer.chat_id);
+      } else if (peer._ === 'inputPeerChannel') {
+        entityId = parseInt(peer.channel_id);
+      }
+      
+      if (!entityId) {
+        throw new Error("Could not determine entity ID from peer");
+      }
+      
+      // Пробуем получить сообщения по entity ID
+      try {
+        // Чтобы избежать проблем с access_hash, используем getMessages по ID
+        console.log(`Getting messages for entity ID: ${entityId}`);
+        
+        // Сначала получаем саму сущность
+        const entity = await currentClient.getEntity(entityId);
+        console.log("Retrieved entity:", entity);
+        
+        // Теперь получаем сообщения
+        const messages = await currentClient.getMessages(entity, {
+          limit: limit
+        });
+        
+        console.log(`Retrieved ${messages.length} messages from Telegram using getMessages`);
+        
+        if (messages && messages.length > 0) {
           // Собираем информацию о пользователях
           const users: any[] = [];
           
           // Обрабатываем сообщения
           const formattedMessages = messages.map(msg => {
             const message = msg as any;
+            
             // Добавляем отправителя в список пользователей
             if (message.sender && message.sender.className === 'User') {
               const senderInfo = message.sender as any;
@@ -965,93 +1029,108 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
             messages: formattedMessages,
             users: users
           };
-        } else if (peer._ === 'inputPeerChat') {
-          entityId = peer.chat_id;
-          console.log(`Getting chat entity for ID: ${entityId}`);
-        } else if (peer._ === 'inputPeerChannel') {
-          entityId = peer.channel_id;
-          console.log(`Getting channel entity for ID: ${entityId} with access_hash: ${peer.access_hash}`);
         } else {
-          throw new Error(`Unsupported peer type: ${peer._}`);
+          console.log("No messages returned from getMessages");
         }
       } catch (entityError) {
-        console.error("Error getting entity:", entityError);
-        
-        // Если не удалось получить сущность, используем запасной вариант
-        console.log("Falling back to alternative method...");
-        
-        // Для InputPeerUser и InputPeerChannel нужно корректно преобразовать access_hash в BigInt
-        if (peer._ === 'inputPeerUser' || peer._ === 'inputPeerChannel') {
-          // Если access_hash уже строка или число, преобразуем её в BigInt
-          if (typeof peer.access_hash === 'string') {
-            try {
-              peer.access_hash = BigInt(peer.access_hash);
-              console.log(`Converted access_hash string to BigInt: ${peer.access_hash}`);
-            } catch (error) {
-              console.error(`Error converting access_hash to BigInt: ${peer.access_hash}`, error);
-            }
-          } else if (typeof peer.access_hash === 'number') {
-            peer.access_hash = BigInt(peer.access_hash);
-            console.log(`Converted access_hash number to BigInt: ${peer.access_hash}`);
-          }
-        }
+        console.error("Error getting messages by entity:", entityError);
       }
       
-      // Пробуем получить сообщения напрямую, если предыдущий подход не сработал
-      const messages = await currentClient.getMessages(peer, {
-        limit: limit
-      });
+      // Третий способ - через API метод getMessages напрямую для конкретного chatId
+      console.log("Trying API method with specific message IDs...");
       
-      console.log(`Retrieved ${messages.length} messages from Telegram`);
-      
-      // Собираем информацию о пользователях
-      const users: any[] = [];
-      
-      // Обрабатываем сообщения
-      const formattedMessages = messages.map(msg => {
-        const message = msg as any;
-        // Добавляем отправителя в список пользователей
-        if (message.sender && message.sender.className === 'User') {
-          const senderInfo = message.sender as any;
-          const existingUser = users.find(u => u.id === senderInfo.id);
-          if (!existingUser) {
-            users.push({
-              id: senderInfo.id,
-              first_name: senderInfo.firstName || '',
-              last_name: senderInfo.lastName || '',
-              username: senderInfo.username || '',
-              photo: senderInfo.photo || null
-            });
-          }
+      try {
+        // Здесь мы не используем MTProto API, а обращаемся напрямую к API методам telegram-js
+        
+        // Формируем правильный InputPeer для MTProto API
+        let inputPeer = null;
+        
+        if (peer._ === 'inputPeerUser') {
+          // Для пользователя
+          inputPeer = {
+            _: 'inputPeerUser',
+            user_id: parseInt(peer.user_id),
+            access_hash: peer.access_hash
+          };
+        } else if (peer._ === 'inputPeerChat') {
+          // Для обычного чата
+          inputPeer = {
+            _: 'inputPeerChat',
+            chat_id: parseInt(peer.chat_id)
+          };
+        } else if (peer._ === 'inputPeerChannel') {
+          // Для канала или супергруппы
+          inputPeer = {
+            _: 'inputPeerChannel',
+            channel_id: parseInt(peer.channel_id),
+            access_hash: peer.access_hash
+          };
         }
         
-        // Форматируем сообщение
-        return {
-          _: 'message',
-          id: message.id,
-          message: message.message || '',
-          date: message.date instanceof Date 
-            ? Math.floor(message.date.getTime() / 1000) 
-            : Math.floor(Date.now() / 1000),
-          out: message.out || false,
-          media: message.media || null,
-          from_id: message.sender ? {
-            _: 'peerUser',
-            user_id: (message.sender as any).id
-          } : null
-        };
-      });
+        if (!inputPeer) {
+          throw new Error(`Unsupported peer type: ${peer._}`);
+        }
+        
+        console.log("Calling messages.getHistory with peer:", inputPeer);
+        
+        // Используем низкоуровневый API для получения истории сообщений
+        // Так как у нас нет прямого доступа к MTProto API, попробуем получить сообщения напрямую через TelegramClient
+        
+        // Получаем ID последних сообщений (предполагаем, что они последовательные)
+        const messageIds = Array.from({ length: limit }, (_, i) => i + 1);
+        console.log(`Trying to get specific message IDs: ${messageIds.join(', ')}`);
+        
+        // Вызываем API метод напрямую через TelegramClient
+        const result = await currentClient.invoke(new Api.messages.GetMessages({
+          id: messageIds
+        }));
+        
+        console.log("messages.getHistory response:", result);
+        
+        if (result && result.messages) {
+          // Извлекаем пользователей из ответа
+          const users = result.users || [];
+          
+          // Форматируем сообщения
+          const formattedMessages = result.messages.map((msg: any) => {
+            // Определяем отправителя
+            let from_id = null;
+            if (msg.from_id) {
+              from_id = msg.from_id;
+            }
+            
+            return {
+              _: 'message',
+              id: msg.id,
+              message: msg.message || '',
+              date: msg.date,
+              out: msg.out || false,
+              media: msg.media || null,
+              from_id: from_id
+            };
+          });
+          
+          return {
+            success: true,
+            messages: formattedMessages,
+            users: users
+          };
+        }
+      } catch (mtprotoError) {
+        console.error("Error with native MTProto request:", mtprotoError);
+      }
       
-      return {
-        success: true,
-        messages: formattedMessages,
-        users: users
-      };
-    } catch (error: any) {
-      console.error("Error fetching chat history:", error);
+      // Если ни один метод не сработал, возвращаем ошибку
       return {
         success: false,
-        error: error.message || "Error fetching messages from Telegram"
+        error: "Failed to retrieve messages using multiple methods"
+      };
+      
+    } catch (error: any) {
+      console.error("Error in message retrieval:", error);
+      return {
+        success: false,
+        error: error.message || "Error retrieving messages from Telegram"
       };
     }
   } catch (error: any) {
