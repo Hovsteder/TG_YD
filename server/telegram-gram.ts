@@ -283,18 +283,26 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
 // Верификация кода и вход в аккаунт
 export async function verifyAuthCode(phoneNumber: string, code: string): Promise<VerifyResult> {
   try {
+    console.log(`verifyAuthCode called for phone: ${phoneNumber}, code: ${code}`);
+    console.log(`Current authCodes map:`, JSON.stringify(Array.from(authCodes.entries()), null, 2));
+    
     const authData = authCodes.get(phoneNumber);
     
     if (!authData) {
+      console.log(`No auth data found for phone: ${phoneNumber}`);
       return { success: false, error: "Auth session expired or not found" };
     }
 
+    console.log(`Auth data found:`, JSON.stringify(authData));
+
     if (authData.attempts >= 3) {
+      console.log(`Too many attempts (${authData.attempts}) for phone: ${phoneNumber}`);
       authCodes.delete(phoneNumber);
       return { success: false, error: "Too many attempts" };
     }
 
     if (new Date() > authData.expiresAt) {
+      console.log(`Auth code expired for phone: ${phoneNumber}, expired at: ${authData.expiresAt}`);
       authCodes.delete(phoneNumber);
       return { success: false, error: "Auth code expired" };
     }
