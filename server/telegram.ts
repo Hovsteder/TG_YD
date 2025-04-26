@@ -4,16 +4,21 @@ import crypto from "crypto";
 
 // Функция получения токена бота из настроек
 async function getBotToken(): Promise<string> {
+  console.log(`[DEBUG] getBotToken: Starting to retrieve bot token`);
   try {
     // Пытаемся получить токен из базы данных (настройки)
+    console.log(`[DEBUG] getBotToken: Trying to get token from database settings`);
     const storedToken = await storage.getSettingValue("telegram_bot_token");
     
     if (storedToken) {
+      console.log(`[DEBUG] getBotToken: Found token in database settings`);
       return storedToken;
     }
     
     // Если токен не найден в базе данных, используем переменную окружения
+    console.log(`[DEBUG] getBotToken: Token not found in database, checking environment variable`);
     if (process.env.TELEGRAM_BOT_TOKEN) {
+      console.log(`[DEBUG] getBotToken: Found token in environment variable, saving to database`);
       // Сохраняем токен в базу данных для будущего использования
       await storage.upsertSetting(
         "telegram_bot_token", 
@@ -23,6 +28,7 @@ async function getBotToken(): Promise<string> {
       return process.env.TELEGRAM_BOT_TOKEN;
     }
     
+    console.log(`[DEBUG] getBotToken: No token found in settings or environment variables`);
     throw new Error("TELEGRAM_BOT_TOKEN not found in settings or environment variables");
   } catch (error) {
     console.error("Error getting bot token:", error);
@@ -62,9 +68,20 @@ let botInstance: Bot | null = null;
 
 // Функция для получения экземпляра бота
 export async function getBotInstance(): Promise<Bot> {
+  console.log(`[DEBUG] getBotInstance: Checking if bot instance exists`);
   if (!botInstance) {
-    const token = await getBotToken();
-    botInstance = new Bot(token);
+    console.log(`[DEBUG] getBotInstance: Bot instance doesn't exist, creating new one`);
+    try {
+      const token = await getBotToken();
+      console.log(`[DEBUG] getBotInstance: Got bot token, initializing Bot instance`);
+      botInstance = new Bot(token);
+      console.log(`[DEBUG] getBotInstance: Bot instance created successfully`);
+    } catch (error) {
+      console.error(`[DEBUG] getBotInstance: Error creating bot instance:`, error);
+      throw error;
+    }
+  } else {
+    console.log(`[DEBUG] getBotInstance: Using existing bot instance`);
   }
   return botInstance;
 }
@@ -80,23 +97,33 @@ const twoFAStore: Record<string, TwoFAData> = {};
 
 // Генерация и сохранение 2FA кода
 export async function generateTwoFACode(telegramId: string): Promise<string> {
+  console.log(`[DEBUG] Starting generateTwoFACode for telegramId: ${telegramId}`);
+  
   // Генерация 5-значного кода
   const code = Math.floor(10000 + Math.random() * 90000).toString();
+  console.log(`[DEBUG] Generated code: ${code}`);
   
   // Сохранение кода в хранилище с временем жизни 5 минут
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
   twoFAStore[telegramId] = { code, expiresAt, attempts: 0 };
+  console.log(`[DEBUG] Saved code in twoFAStore with expiry: ${expiresAt}`);
   
   try {
     // Получаем экземпляр бота
+    console.log(`[DEBUG] Getting bot instance...`);
     const botInstance = await getBotInstance();
+    console.log(`[DEBUG] Got bot instance successfully`);
     
     // Отправка кода пользователю через Telegram
+    console.log(`[DEBUG] Attempting to send message to telegramId: ${telegramId}`);
     await botInstance.api.sendMessage(telegramId, `Ваш код подтверждения: ${code}\nДействителен в течение 5 минут.`);
+    console.log(`[DEBUG] Message sent successfully to telegramId: ${telegramId}`);
     
     // Обновление кода в базе данных
+    console.log(`[DEBUG] Looking up user by telegramId: ${telegramId}`);
     const user = await storage.getUserByTelegramId(telegramId);
     if (user) {
+      console.log(`[DEBUG] User found: ${user.id}, updating with 2FA code`);
       await storage.updateUser(user.id, { twoFaCode: code });
       
       // Логирование действия
@@ -106,8 +133,12 @@ export async function generateTwoFACode(telegramId: string): Promise<string> {
         details: { telegram_id: telegramId },
         ipAddress: null
       });
+      console.log(`[DEBUG] Created log entry for 2FA code sent`);
+    } else {
+      console.log(`[DEBUG] User not found for telegramId: ${telegramId}`);
     }
     
+    console.log(`[DEBUG] Successfully completed generateTwoFACode`);
     return code;
   } catch (error) {
     console.error("Error sending 2FA code:", error);
@@ -115,6 +146,8 @@ export async function generateTwoFACode(telegramId: string): Promise<string> {
       console.error("Error in Telegram API:", error.description);
     } else if (error instanceof HttpError) {
       console.error("HTTP error:", error);
+    } else {
+      console.error("Unexpected error type:", error);
     }
     throw new Error("Failed to send 2FA code");
   }
