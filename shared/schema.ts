@@ -6,7 +6,7 @@ import { z } from "zod";
 // Пользователи системы
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  telegramId: text("telegram_id").notNull().unique(),
+  telegramId: text("telegram_id").unique(), // Убрали notNull, так как теперь авторизация может быть не через Telegram
   username: text("username"),
   firstName: text("first_name"),
   lastName: text("last_name"),
@@ -17,6 +17,12 @@ export const users = pgTable("users", {
   isAdmin: boolean("is_admin").default(false),
   lastLogin: timestamp("last_login"),
   createdAt: timestamp("created_at").defaultNow(),
+  // Новые поля для авторизации по телефону
+  phoneNumber: text("phone_number").unique(),
+  email: text("email").unique(),
+  verificationCode: text("verification_code"),
+  verificationCodeExpires: timestamp("verification_code_expires"),
+  isVerified: boolean("is_verified").default(false),
 });
 
 // Сессии пользователей

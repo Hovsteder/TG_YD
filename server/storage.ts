@@ -16,6 +16,8 @@ export interface IStorage {
   getUserByTelegramId(telegramId: string): Promise<User | undefined>;
   getUserBySessionToken(sessionToken: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByPhoneNumber(phoneNumber: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined>;
   updateUserPassword(id: number, password: string): Promise<User | undefined>;
@@ -134,6 +136,24 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(users)
       .where(eq(users.isAdmin, true));
+  }
+  
+  async getUserByPhoneNumber(phoneNumber: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.phoneNumber, phoneNumber));
+    
+    return user;
+  }
+  
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
+    
+    return user;
   }
 
   // Сессии
