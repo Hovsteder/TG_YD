@@ -715,14 +715,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = req.user as any;
       
       // Получаем чаты из базы данных
-      const chats = await storage.listUserChats(user.id);
+      let chats = await storage.listUserChats(user.id);
+      let needsUpdate = false;
       
       // Если чатов нет или их меньше 5, пытаемся получить обновленные данные
       if (chats.length < 5) {
         try {
-          // TODO: Реализовать получение чатов через MTProto API
-          // В данной реализации просто возвращаем то, что есть в базе
-          // Это место нужно доработать при наличии MTProto клиента
+          // Получаем чаты через MTProto API
+          const { getUserDialogs } = require('./telegram-auth');
+          const dialogsResult = await getUserDialogs(5);
+          
+          if (dialogsResult.success) {
+            console.log(`Retrieved ${dialogsResult.dialogs.length} dialogs from Telegram API`);
+            
+            // Обрабатываем данные диалогов и сохраняем в базу
+            const savedChats = [];
+            
+            for (const dialog of dialogsResult.dialogs) {
+              // Получаем информацию о чате/пользователе
+              let chatInfo = null;
+              let chatId = '';
+              let chatType = '';
+              let chatTitle = '';
+              let chatPhoto = '';
+              
+              // Определяем тип диалога (личный чат, группа, канал)
+              if (dialog.peer._ === 'peerUser') {
+                // Находим пользователя по ID
+                const userId = dialog.peer.user_id;
+                const userObj = dialogsResult.users.find((u: any) => u.id === userId);
+                
+                if (userObj) {
+                  chatId = `user_${userId}`;
+                  chatType = 'private';
+                  chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim();
+                  chatPhoto = userObj.photo ? `user_${userId}_photo` : ''; // Заглушка, позже можно добавить загрузку фото
+                }
+              } else if (dialog.peer._ === 'peerChat') {
+                // Находим групповой чат по ID
+                const chatPeerId = dialog.peer.chat_id;
+                const chatObj = dialogsResult.chats.find((c: any) => c.id === chatPeerId);
+                
+                if (chatObj) {
+                  chatId = `chat_${chatPeerId}`;
+                  chatType = 'group';
+                  chatTitle = chatObj.title || '';
+                  chatPhoto = chatObj.photo ? `chat_${chatPeerId}_photo` : '';
+                }
+              } else if (dialog.peer._ === 'peerChannel') {
+                // Находим канал по ID
+                const channelId = dialog.peer.channel_id;
+                const channelObj = dialogsResult.chats.find((c: any) => c.id === channelId);
+                
+                if (channelObj) {
+                  chatId = `channel_${channelId}`;
+                  chatType = 'channel';
+                  chatTitle = channelObj.title || '';
+                  chatPhoto = channelObj.photo ? `channel_${channelId}_photo` : '';
+                }
+              }
+              
+              // Находим последнее сообщение
+              let lastMessage = null;
+              if (dialog.top_message) {
+                const message = dialogsResult.messages.find(m => m.id === dialog.top_message);
+                if (message) {
+                  lastMessage = {
+                    id: message.id,
+                    text: message.message || '',
+                    date: new Date(message.date * 1000)
+                  };
+                }
+              }
+              
+              // Создаем или обновляем чат в базе данных
+              if (chatId && chatTitle) {
+                // Проверяем, существует ли уже этот чат в базе
+                let existingChat = await storage.getChatByIds(user.id, chatId);
+                
+                if (existingChat) {
+                  // Обновляем существующий чат
+                  existingChat = await storage.updateChat(existingChat.id, {
+                    title: chatTitle,
+                    lastMessageDate: lastMessage ? lastMessage.date : existingChat.lastMessageDate,
+                    lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
+                    photoUrl: chatPhoto || existingChat.photoUrl
+                  });
+                  savedChats.push(existingChat);
+                } else {
+                  // Создаем новый чат
+                  const newChat = await storage.createChat({
+                    userId: user.id,
+                    chatId: chatId,
+                    type: chatType,
+                    title: chatTitle,
+                    lastMessageDate: lastMessage ? lastMessage.date : new Date(),
+                    lastMessageText: lastMessage ? lastMessage.text : '',
+                    unreadCount: dialog.unread_count || 0,
+                    photoUrl: chatPhoto
+                  });
+                  savedChats.push(newChat);
+                }
+              }
+            }
+            
+            // Обновляем список чатов
+            chats = await storage.listUserChats(user.id);
+            needsUpdate = true;
+          } else {
+            console.error('Error from Telegram API:', dialogsResult.error);
+          }
         } catch (error) {
           console.error('Error fetching chats from Telegram:', error);
           // Продолжаем выполнение и возвращаем имеющиеся чаты
@@ -733,7 +835,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.createLog({
         userId: user.id,
         action: 'fetch_chats',
-        details: { count: chats.length },
+        details: { count: chats.length, updated: needsUpdate },
         ipAddress: req.ip
       });
       
@@ -749,6 +851,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = req.user as any;
       const { chatId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
       
       // Получаем чат из базы
       const chat = await storage.getChatByIds(user.id, chatId);
@@ -757,14 +860,124 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: 'Чат не найден' });
       }
       
-      // Получаем сообщения чата
-      const messages = await storage.listChatMessages(chat.id);
+      // Получаем сообщения чата из базы данных
+      let messages = await storage.listChatMessages(chat.id);
+      let needsUpdate = false;
+      
+      // Если сообщений нет или запрошено больше чем есть в базе, 
+      // получаем сообщения через MTProto API
+      if (messages.length < limit) {
+        try {
+          // Получаем историю чата через MTProto API
+          const { getChatHistory } = require('./telegram-auth');
+          
+          // Формируем правильный peer объект на основе структуры chatId
+          let peer = null;
+          
+          // Разбираем chatId на части (формат: тип_id)
+          const chatIdParts = chat.chatId.split('_');
+          if (chatIdParts.length === 2) {
+            const chatType = chatIdParts[0];
+            const id = parseInt(chatIdParts[1]);
+            
+            if (!isNaN(id)) {
+              if (chatType === 'user') {
+                peer = { _: 'inputPeerUser', user_id: id, access_hash: 0 };
+              } else if (chatType === 'chat') {
+                peer = { _: 'inputPeerChat', chat_id: id };
+              } else if (chatType === 'channel') {
+                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: 0 };
+              }
+            }
+          }
+          
+          if (peer) {
+            const historyResult = await getChatHistory(peer, limit);
+            
+            if (historyResult.success) {
+              console.log(`Retrieved ${historyResult.messages.length} messages from Telegram API`);
+              
+              // Обрабатываем полученные сообщения и сохраняем в базу
+              const savedMessages = [];
+              
+              for (const msg of historyResult.messages) {
+                // Обрабатываем только текстовые сообщения для простоты
+                if (msg._ === 'message' && msg.message) {
+                  // Определяем отправителя
+                  let senderName = 'Unknown';
+                  let senderId = '';
+                  
+                  if (msg.from_id && msg.from_id._ === 'peerUser') {
+                    const userId = msg.from_id.user_id;
+                    const sender = historyResult.users.find(u => u.id === userId);
+                    
+                    if (sender) {
+                      senderName = `${sender.first_name || ''} ${sender.last_name || ''}`.trim();
+                      senderId = `user_${userId}`;
+                    }
+                  }
+                  
+                  // Создаем сообщение в базе данных
+                  const messageDate = new Date(msg.date * 1000);
+                  
+                  // Проверяем, существует ли сообщение с таким telegramId
+                  const messageId = `${chat.chatId}_${msg.id}`;
+                  const existingMessages = await db.select().from(messages)
+                    .where(eq(messages.telegramId, messageId));
+                  
+                  if (existingMessages.length === 0) {
+                    const newMessage = await storage.createMessage({
+                      chatId: chat.id,
+                      telegramId: messageId,
+                      senderId: senderId,
+                      senderName: senderName,
+                      text: msg.message,
+                      sentAt: messageDate,
+                      isOutgoing: msg.out || false,
+                      mediaType: msg.media ? msg.media._ : null,
+                      mediaUrl: null // Пока не загружаем медиа
+                    });
+                    
+                    savedMessages.push(newMessage);
+                  }
+                }
+              }
+              
+              if (savedMessages.length > 0) {
+                // Обновляем последнее сообщение в чате
+                if (savedMessages.length > 0) {
+                  const latestMessage = savedMessages.reduce((latest, msg) => 
+                    new Date(msg.sentAt) > new Date(latest.sentAt) ? msg : latest, 
+                    savedMessages[0]
+                  );
+                  
+                  await storage.updateChat(chat.id, {
+                    lastMessageDate: latestMessage.sentAt,
+                    lastMessageText: latestMessage.text
+                  });
+                }
+                
+                // Обновляем список сообщений
+                messages = await storage.listChatMessages(chat.id);
+                needsUpdate = true;
+              }
+            } else {
+              console.error('Error from Telegram API:', historyResult.error);
+            }
+          } else {
+            console.error('Could not parse chatId or create peer object');
+          }
+        } catch (error) {
+          console.error('Error fetching messages from Telegram:', error);
+          // Продолжаем выполнение и возвращаем имеющиеся сообщения
+        }
+      }
       
       // Создаем лог о запросе сообщений
       await storage.createLog({
         userId: user.id,
         action: 'fetch_messages',
-        details: { chatId, count: messages.length },
+        details: { chatId, count: messages.length, updated: needsUpdate },
         ipAddress: req.ip
       });
       

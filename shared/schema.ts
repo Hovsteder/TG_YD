@@ -46,6 +46,10 @@ export const chats = pgTable("chats", {
   avatarUrl: text("avatar_url"),
   isActive: boolean("is_active").default(true),
   lastUpdated: timestamp("last_updated").defaultNow(),
+  lastMessageDate: timestamp("last_message_date"),
+  lastMessageText: text("last_message_text"),
+  unreadCount: integer("unread_count").default(0),
+  photoUrl: text("photo_url"),
   metadata: jsonb("metadata"), // Дополнительные данные о чате
 });
 
@@ -53,13 +57,14 @@ export const chats = pgTable("chats", {
 export const messages = pgTable("messages", {
   id: serial("id").primaryKey(),
   chatId: integer("chat_id").notNull().references(() => chats.id, { onDelete: "cascade" }),
-  messageId: text("message_id").notNull(),
+  telegramId: text("telegram_id").notNull(),
   senderId: text("sender_id"),
   senderName: text("sender_name"),
   text: text("text"),
+  sentAt: timestamp("sent_at").notNull(),
+  isOutgoing: boolean("is_outgoing").default(false),
   mediaType: text("media_type"), // 'photo', 'video', 'document', 'audio', 'voice', etc.
   mediaUrl: text("media_url"),
-  timestamp: timestamp("timestamp").notNull(),
   metadata: jsonb("metadata"), // Дополнительные данные о сообщении
 });
 
