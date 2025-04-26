@@ -12,7 +12,8 @@ import {
   logoutTelegramUser, 
   initTelegramAuth,
   createQRLoginCode,
-  checkQRLoginStatus
+  checkQRLoginStatus,
+  getChatHistory
 } from "./telegram-gram";
 import { z } from "zod";
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
@@ -2233,6 +2234,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         success: false,
         message: error.message || 'Ошибка проверки QR авторизации' 
+      });
+    }
+  });
+
+  // Тестовый эндпоинт для проверки сообщений без сохранения в БД
+  app.get("/api/test/messages", async (req, res) => {
+    try {
+      // Используем предопределенный chatId для тестов
+      const peer = { 
+        _: 'inputPeerUser', 
+        user_id: 777000, 
+        access_hash: '-7461882757481466307' 
+      };
+      
+      // Получаем историю сообщений
+      const historyResult = await getChatHistory(peer, 10);
+      
+      res.json(historyResult);
+    } catch (error: any) {
+      console.error("Error in test messages endpoint:", error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message || "Unknown error"
       });
     }
   });

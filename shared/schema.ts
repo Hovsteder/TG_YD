@@ -58,11 +58,12 @@ export const chats = pgTable("chats", {
 export const messages = pgTable("messages", {
   id: serial("id").primaryKey(),
   chatId: integer("chat_id").notNull().references(() => chats.id, { onDelete: "cascade" }),
-  telegramId: text("telegram_id").notNull(),
+  messageId: text("message_id").notNull(), // Telegram message ID - добавлено для соответствия БД
+  telegramId: text("telegram_id"),
   senderId: text("sender_id"),
   senderName: text("sender_name"),
   text: text("text"),
-  sentAt: timestamp("sent_at").notNull(),
+  sentAt: timestamp("sent_at"),
   isOutgoing: boolean("is_outgoing").default(false),
   mediaType: text("media_type"), // 'photo', 'video', 'document', 'audio', 'voice', etc.
   mediaUrl: text("media_url"),
