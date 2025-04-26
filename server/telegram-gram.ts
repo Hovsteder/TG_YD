@@ -9,6 +9,49 @@ import * as crypto from "crypto";
 let stringSession = "";
 let client: TelegramClient | null = null;
 
+// Функция для сохранения сессии в БД
+async function saveSessionToDB(sessionStr: string) {
+  try {
+    console.log("Saving Telegram session to database...");
+    await db.insert(settings)
+      .values({
+        key: "telegram_session",
+        value: sessionStr,
+        description: "Telegram client session string"
+      })
+      .onConflictDoUpdate({
+        target: settings.key,
+        set: { value: sessionStr }
+      });
+    console.log("Telegram session saved successfully to DB");
+    return true;
+  } catch (error) {
+    console.error("Error saving Telegram session to DB:", error);
+    return false;
+  }
+}
+
+// Функция для загрузки сессии из БД
+async function loadSessionFromDB(): Promise<string> {
+  try {
+    console.log("Loading Telegram session from database...");
+    const sessionSetting = await db.query.settings.findFirst({
+      where: eq(settings.key, "telegram_session")
+    });
+    
+    if (sessionSetting?.value) {
+      console.log("Telegram session loaded successfully from DB");
+      return sessionSetting.value;
+    }
+    
+    console.log("No saved Telegram session found in DB");
+    return "";
+  } catch (error) {
+    console.error("Error loading Telegram session from DB:", error);
+    return "";
+  }
+}
+
 // Хранилище для временных кодов авторизации
 interface AuthCode {
   phoneCodeHash: string;
@@ -100,9 +143,17 @@ async function getClient(): Promise<TelegramClient> {
       const newSession = client.session.save();
       if (typeof newSession === 'string') {
         stringSession = newSession;
+        // Сохраняем сессию в БД при каждом запросе
+        await saveSessionToDB(newSession);
       }
     }
     return client;
+  }
+
+  // Загружаем сессию из БД при первом подключении
+  if (!stringSession) {
+    stringSession = await loadSessionFromDB();
+    console.log("Loaded session from DB:", stringSession ? "Session found" : "No session");
   }
 
   const { apiId, apiHash } = await getTelegramApiCredentials();
