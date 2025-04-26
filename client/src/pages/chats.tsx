@@ -76,7 +76,8 @@ export default function ChatsPage() {
   };
 
   // Форматирование даты с учетом языка
-  const formatDate = (date: Date) => {
+  const formatDate = (date: Date | null) => {
+    if (!date) return '';
     return formatDistanceToNow(new Date(date), { 
       addSuffix: true, 
       locale: language === 'ru' ? ru : enUS 
