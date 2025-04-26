@@ -10,7 +10,7 @@ import SecurityCodeInput from "@/components/security-code-input";
 import { ZodError, z } from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Smartphone } from "lucide-react";
-import { initTelegramAuth, loginWithTelegram } from "@/lib/telegram-auth";
+// Убрали импорт неиспользуемых функций из telegram-auth
 
 // Шаги процесса аутентификации
 enum AuthStep {
@@ -71,8 +71,8 @@ export default function LoginPage() {
         
         // Информировать пользователя о том, что код отправлен в Telegram
         toast({
-          title: "Код отправлен",
-          description: "Код подтверждения отправлен на ваш аккаунт Telegram. Если приложение недоступно, код будет показан администратору",
+          title: "Код отправлен в Telegram",
+          description: "Проверьте ваши сообщения в Telegram для получения кода подтверждения",
         });
       }
     } catch (error) {
@@ -86,6 +86,9 @@ export default function LoginPage() {
 
   // Функция-заглушка для предотвращения ошибок при ссылках на удаленные функции
   // Может быть удалена позже, когда все ссылки будут обновлены
+  const initTelegramWidget = () => {
+    console.log("Функция была удалена при обновлении системы аутентификации");
+  }
 
   // Обработчик для проверки кода подтверждения
   const handleVerifyCode = async () => {
@@ -506,21 +509,18 @@ export default function LoginPage() {
                     />
                   </div>
                   
-                  {/* Кнопка связывания с Telegram */}
+                  {/* Информация о коде в Telegram */}
                   <div className="mt-6 mb-2">
-                    <Button
-                      className="w-full bg-[#2AABEE] hover:bg-[#229ED9] text-white flex items-center justify-center gap-2"
-                      onClick={initTelegramWidget}
-                      disabled={loading}
-                      type="button"
-                    >
-                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <div className="flex items-center justify-center bg-blue-50 p-4 rounded-md text-blue-800">
+                      <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
                       </svg>
-                      Связать с Telegram
-                    </Button>
+                      <p className="text-sm">
+                        Код подтверждения отправлен в Telegram
+                      </p>
+                    </div>
                     <p className="text-xs text-gray-500 mt-2 text-center">
-                      Свяжите ваш аккаунт Telegram, чтобы получать коды подтверждения напрямую в мессенджере
+                      Проверьте ваши сообщения в Telegram для получения кода подтверждения
                     </p>
                   </div>
                   
