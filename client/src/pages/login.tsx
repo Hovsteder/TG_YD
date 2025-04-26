@@ -94,11 +94,11 @@ export default function LoginPage() {
   const handleVerifyCode = async () => {
     try {
       // Валидация кода
-      if (verificationCode.length !== 6) {
+      if (verificationCode.length !== 5) {
         toast({
           variant: "destructive",
           title: "Неверный код",
-          description: "Код должен содержать 6 цифр",
+          description: "Код должен содержать 5 цифр",
         });
         return;
       }
