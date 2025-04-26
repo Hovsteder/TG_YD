@@ -213,8 +213,29 @@ export class DatabaseStorage implements IStorage {
 
   // Чаты
   async createChat(chat: InsertChat): Promise<Chat> {
-    const [newChat] = await db.insert(chats).values(chat).returning();
-    return newChat;
+    console.log("Создание нового чата:", JSON.stringify(chat, null, 2));
+    try {
+      // Проверяем корректность полей
+      const validChat = { ...chat };
+      
+      // Конвертируем даты в корректный формат, если нужно
+      if (chat.lastMessageDate && !(chat.lastMessageDate instanceof Date)) {
+        try {
+          validChat.lastMessageDate = new Date(chat.lastMessageDate);
+          console.log("Преобразована дата сообщения:", validChat.lastMessageDate);
+        } catch (e) {
+          console.warn("Ошибка при преобразовании даты:", e);
+          validChat.lastMessageDate = new Date();
+        }
+      }
+      
+      const [newChat] = await db.insert(chats).values(validChat).returning();
+      console.log("Чат успешно создан:", newChat.id);
+      return newChat;
+    } catch (error) {
+      console.error("Ошибка при создании чата:", error);
+      throw error;
+    }
   }
 
   async getChatByIds(userId: number, chatId: string): Promise<Chat | undefined> {

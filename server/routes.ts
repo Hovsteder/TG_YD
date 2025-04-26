@@ -793,6 +793,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 safeDate.setHours(0, 0, 0, 0);
                 
                 try {
+                  console.log(`Обработка контакта для создания чата: ${userId} - ${chatTitle}`);
+                  
                   // Проверяем существует ли чат
                   let existingChat = await storage.getChatByIds(user.id, chatId);
                   
@@ -805,17 +807,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     savedChats.push(existingChat);
                   } else {
                     console.log(`Creating new chat for user ${userId}: ${chatTitle}`);
-                    const newChat = await storage.createChat({
-                      userId: user.id,
-                      chatId: chatId,
-                      type: chatType,
-                      title: chatTitle,
-                      lastMessageDate: safeDate,
-                      lastMessageText: 'Начало чата',
-                      unreadCount: 0,
-                      photoUrl: chatPhoto
-                    });
-                    savedChats.push(newChat);
+                    try {
+                      const newChat = await storage.createChat({
+                        userId: user.id,
+                        chatId: chatId,
+                        type: chatType,
+                        title: chatTitle,
+                        lastMessageDate: safeDate,
+                        lastMessageText: 'Начало чата',
+                        unreadCount: 0,
+                        photoUrl: chatPhoto
+                      });
+                      
+                      console.log("Чат успешно создан:", newChat.id);
+                      savedChats.push(newChat);
+                    } catch (createError) {
+                      console.error(`Ошибка при создании чата для ${userId}: ${chatTitle}`, createError);
+                    }
                   }
                 } catch (chatError) {
                   console.error(`Error saving chat for user ${userId}:`, chatError);

@@ -697,12 +697,13 @@ export async function getUserDialogs(limit = 5): Promise<any> {
                 // Добавляем контакт в список пользователей если его еще нет
                 const contactId = contact.id?.toString();
                 if (contactId && !users.some(u => u.id === contactId)) {
+                  const contactObj = contact as any; // Используем any для доступа к полям
                   users.push({
                     id: contactId,
-                    first_name: contact.firstName || '',
-                    last_name: contact.lastName || '',
-                    username: contact.username || '',
-                    phone: contact.phone || ''
+                    first_name: contactObj.firstName || '',
+                    last_name: contactObj.lastName || '',
+                    username: contactObj.username || '',
+                    phone: contactObj.phone || ''
                   });
                 }
               }
