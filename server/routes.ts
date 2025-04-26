@@ -1645,8 +1645,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Если пользователь еще не авторизовался, возвращаем статус ожидания
         return res.status(200).json({
           success: false,
-          waiting: result.error === 'Waiting for QR code scan',
-          message: result.error || 'Ожидание сканирования QR кода'
+          waiting: result.waiting || result.error === 'Waiting for QR code scan',
+          message: result.message || result.error || 'Ожидание сканирования QR кода'
         });
       }
     } catch (error: any) {
