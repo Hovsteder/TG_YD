@@ -57,6 +57,15 @@ interface VerifyResult {
   error?: string;
 }
 
+// Интерфейс для результата QR-авторизации
+interface QRLoginResult {
+  success: boolean;
+  token?: string;
+  url?: string;
+  expires?: number;
+  error?: string;
+}
+
 // Получение API ID и API Hash из переменных окружения или базы данных
 async function getTelegramApiCredentials() {
   // Приоритет: сначала из переменных окружения, затем из базы данных
@@ -311,26 +320,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
 
     authData.attempts += 1;
 
-    // ВРЕМЕННОЕ РЕШЕНИЕ: для отладки позволяет нам обойти ограничения Telegram API
-    // Проверяем, если это тестовый номер и код соответствует тестовому коду
-    if (phoneNumber === "+905451844865" && authData.code && authData.code === code) {
-      console.log(`DEBUG MODE: Verifying code in test mode for ${phoneNumber}`);
-      
-      // Очищаем данные авторизации
-      authCodes.delete(phoneNumber);
-      
-      // Возвращаем успешный результат для тестирования
-      return {
-        success: true,
-        user: {
-          id: "123456789", // Фиктивный ID
-          firstName: "Test",
-          lastName: "User",
-          username: "test_user",
-          phone: phoneNumber
-        }
-      };
-    }
+    // Тестовый режим удален для перехода на реальную авторизацию
 
     // Получаем клиент Telegram
     const currentClient = await getClient();
@@ -520,4 +510,163 @@ export async function getUserDialogs(limit = 5): Promise<any> {
 export async function getChatHistory(peer: any, limit = 20): Promise<any> {
   // Заглушка
   return [];
+}
+
+// Хранилище для QR-кодов
+const qrLoginSessions = new Map<string, {
+  token: string;
+  expiresAt: Date;
+}>();
+
+// Map в глобальной области видимости для доступа из других модулей
+declare global {
+  var qrLoginSessions: Map<string, {
+    token: string;
+    expiresAt: Date;
+  }>;
+}
+
+// Делаем доступными глобально
+global.qrLoginSessions = qrLoginSessions;
+
+// 1. Создание QR кода для входа
+export async function createQRLoginCode(): Promise<QRLoginResult> {
+  try {
+    // Получаем клиент Telegram
+    const currentClient = await getClient();
+    
+    try {
+      console.log("Generating QR login code...");
+      
+      // Генерируем QR код с помощью API Telegram
+      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
+        apiId: (await getTelegramApiCredentials()).apiId,
+        apiHash: (await getTelegramApiCredentials()).apiHash,
+        exceptIds: []
+      }));
+      
+      console.log("QR login export result:", result);
+      
+      // Проверяем результат
+      if (result && result.token) {
+        // Генерируем уникальный token для отслеживания статуса
+        const sessionToken = crypto.randomBytes(16).toString('hex');
+        
+        // Создаем URL для QR кода
+        // Согласно документации Telegram, URL для QR кода имеет формат:
+        // tg://login?token=base64(token)
+        const tokenBase64 = Buffer.from(result.token).toString('base64');
+        const loginUrl = `tg://login?token=${tokenBase64}`;
+        
+        // Сохраняем информацию о сессии
+        qrLoginSessions.set(sessionToken, {
+          token: tokenBase64,
+          expiresAt: new Date(Date.now() + (result.expires * 1000))
+        });
+        
+        return {
+          success: true,
+          token: sessionToken,
+          url: loginUrl,
+          expires: result.expires
+        };
+      }
+      
+      return {
+        success: false,
+        error: "Failed to generate QR login code"
+      };
+    } catch (error: any) {
+      console.error("Error generating QR login code:", error);
+      return {
+        success: false,
+        error: error.message || "Error generating QR login code"
+      };
+    }
+  } catch (error: any) {
+    console.error("Error in createQRLoginCode:", error);
+    return {
+      success: false,
+      error: error.message || "Ошибка при создании QR кода для входа"
+    };
+  }
+}
+
+// 2. Проверка статуса авторизации по QR коду
+export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
+  try {
+    console.log(`Checking QR login status for token: ${token}`);
+    
+    // Получаем данные сессии QR
+    const sessionData = qrLoginSessions.get(token);
+    if (!sessionData) {
+      return {
+        success: false,
+        error: "QR session not found or expired"
+      };
+    }
+    
+    // Проверяем, не истекла ли сессия
+    if (new Date() > sessionData.expiresAt) {
+      // Удаляем истекшую сессию
+      qrLoginSessions.delete(token);
+      return {
+        success: false,
+        error: "QR code expired"
+      };
+    }
+    
+    // Получаем клиент Telegram
+    const currentClient = await getClient();
+    
+    try {
+      // Проверяем статус авторизации по токену
+      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
+        apiId: (await getTelegramApiCredentials()).apiId,
+        apiHash: (await getTelegramApiCredentials()).apiHash,
+        exceptIds: []
+      }));
+      
+      console.log("QR login status check result:", result);
+      
+      // Если есть authorization, значит пользователь отсканировал QR код
+      if (result && result.authorization) {
+        // Удаляем сессию QR
+        qrLoginSessions.delete(token);
+        
+        // Обрабатываем информацию о пользователе
+        if (result.authorization.user) {
+          const userInfo = result.authorization.user;
+          return {
+            success: true,
+            user: {
+              id: userInfo.id.toString(),
+              firstName: userInfo.firstName || "",
+              lastName: userInfo.lastName || "",
+              username: userInfo.username || "",
+              phone: userInfo.phone || ""
+            }
+          };
+        }
+      }
+      
+      // Если нет ошибки, но и авторизации тоже нет - ждем сканирования
+      return {
+        success: false,
+        error: "Waiting for QR code scan"
+      };
+    } catch (error: any) {
+      console.error("Error checking QR login status:", error);
+      return {
+        success: false,
+        error: error.message || "Error checking QR login status"
+      };
+    }
+  } catch (error: any) {
+    console.error("Error in checkQRLoginStatus:", error);
+    return {
+      success: false,
+      error: error.message || "Ошибка при проверке статуса QR авторизации"
+    };
+  }
 }
