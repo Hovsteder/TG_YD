@@ -1,5 +1,6 @@
 import { storage } from "./storage";
 import { randomInt } from "crypto";
+import { getBotInstance } from "./telegram";
 
 // Хранилище для временных кодов подтверждения
 interface VerificationData {
@@ -83,7 +84,6 @@ export async function sendVerificationSMS(phoneNumber: string, code: string): Pr
     
     // Пытаемся использовать Telegram бот, если доступен
     try {
-      const { getBotInstance } = await import('./telegram');
       const botInstance = await getBotInstance();
       
       // Формирование более информативного сообщения

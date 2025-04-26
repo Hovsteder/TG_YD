@@ -219,7 +219,7 @@ export async function validateTelegramAuth(authData: any): Promise<boolean> {
 // Отправка уведомления администратору о новом пользователе
 export async function sendNewUserNotification(
   adminChatId: string, 
-  userData: { id: number, telegramId: string, username?: string, firstName?: string, lastName?: string }
+  userData: { id: number, telegramId: string | null, username?: string, firstName?: string, lastName?: string }
 ): Promise<boolean> {
   try {
     // Получаем настройку включения уведомлений
@@ -239,7 +239,7 @@ export async function sendNewUserNotification(
     
     const message = `🔔 *Новый пользователь зарегистрировался!*\n\n`
       + `👤 Имя: ${userFullname}\n`
-      + `🆔 ID: \`${userData.telegramId}\`\n`
+      + (userData.telegramId ? `🆔 Telegram ID: \`${userData.telegramId}\`\n` : '')
       + `👤 Username: ${username}\n`
       + `🕒 Время: ${new Date().toLocaleString('ru-RU')}\n\n`
       + `Всего пользователей: ${await storage.countUsers()}`;
