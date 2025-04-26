@@ -155,6 +155,14 @@ export const translations: Record<string, TranslationKey> = {
     en: "Go to admin login",
     ru: "Перейти к входу администратора"
   },
+  "signin.continue_en": {
+    en: "Continue in English",
+    ru: "Продолжить на английском"
+  },
+  "signin.qr_login": {
+    en: "Quick login with QR code",
+    ru: "Быстрый вход через QR-код"
+  },
   
   // QR-код авторизации
   "qr.login": {

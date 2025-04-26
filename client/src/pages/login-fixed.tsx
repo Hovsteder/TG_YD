@@ -11,7 +11,6 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { ZodError, z } from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Smartphone, QrCode } from "lucide-react";
-// Убрали импорт неиспользуемых функций из telegram-auth
 
 // Шаги процесса аутентификации
 enum AuthStep {
@@ -41,7 +40,6 @@ export default function LoginPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
-  const [tabValue, setTabValue] = useState("phone"); // Активная вкладка: phone или admin
   const [showQRCodeModal, setShowQRCodeModal] = useState(false); // Состояние для модального окна QR-кода
   
   // Обработчик успешного QR-входа
@@ -102,12 +100,6 @@ export default function LoginPage() {
       });
     }
   };
-
-  // Функция-заглушка для предотвращения ошибок при ссылках на удаленные функции
-  // Может быть удалена позже, когда все ссылки будут обновлены
-  const initTelegramWidget = () => {
-    console.log("Функция была удалена при обновлении системы аутентификации");
-  }
 
   // Обработчик для проверки кода подтверждения
   const handleVerifyCode = async () => {
@@ -224,8 +216,6 @@ export default function LoginPage() {
     }
   };
   
-
-
   // Обработчик выбора страны
   const handleCountrySelect = (country: string, code: string) => {
     setSelectedCountry(country);
@@ -445,208 +435,208 @@ export default function LoginPage() {
           </p>
         </div>
         
-        {/* Форма входа - удаляем табы и оставляем только основную форму */}
+        {/* Форма входа */}
         <div className="mb-8">
-              {/* Шаг 1: Ввод номера телефона */}
-              {authStep === AuthStep.PHONE_INPUT && (
-                <>
-                  {/* Выбор страны */}
-                  <div className="mb-4">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.country')}</label>
-                    <div className="relative">
-                      <button
-                        className="w-full py-3 px-4 border border-gray-300 rounded-md flex items-center justify-between"
-                        onClick={() => setShowCountryDropdown(!showCountryDropdown)}
-                        type="button"
-                      >
-                        <span>{selectedCountry}</span>
-                        <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </button>
-                      
-                      {/* Выпадающий список стран */}
-                      {showCountryDropdown && (
-                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {countries.map((country) => (
-                            <button
-                              key={country.code}
-                              className="w-full px-4 py-2 text-left hover:bg-gray-100"
-                              onClick={() => handleCountrySelect(country.name, country.code)}
-                            >
-                              {country.name} ({country.code})
-                            </button>
-                          ))}
-                        </div>
-                      )}
+          {/* Шаг 1: Ввод номера телефона */}
+          {authStep === AuthStep.PHONE_INPUT && (
+            <>
+              {/* Выбор страны */}
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.country')}</label>
+                <div className="relative">
+                  <button
+                    className="w-full py-3 px-4 border border-gray-300 rounded-md flex items-center justify-between"
+                    onClick={() => setShowCountryDropdown(!showCountryDropdown)}
+                    type="button"
+                  >
+                    <span>{selectedCountry}</span>
+                    <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  
+                  {/* Выпадающий список стран */}
+                  {showCountryDropdown && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {countries.map((country) => (
+                        <button
+                          key={country.code}
+                          className="w-full px-4 py-2 text-left hover:bg-gray-100"
+                          onClick={() => handleCountrySelect(country.name, country.code)}
+                        >
+                          {country.name} ({country.code})
+                        </button>
+                      ))}
                     </div>
-                  </div>
-
-                  {/* Ввод номера телефона */}
-                  <div className="mb-6">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.phone')}</label>
-                    <Input
-                      type="tel"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                  </div>
-
-                  {/* Чекбокс "Оставаться в системе" */}
-                  <div className="flex items-center mb-6">
-                    <Checkbox
-                      id="keep-signed-in"
-                      checked={keepSignedIn}
-                      onCheckedChange={(checked) => setKeepSignedIn(!!checked)}
-                      className="h-4 w-4 border-gray-300 rounded text-[#38A2E1]"
-                    />
-                    <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-600">
-                      {t('signin.keep_signed')}
-                    </label>
-                  </div>
-                </>
-              )}
-
-              {/* Шаг 2: Верификация кода */}
-              {authStep === AuthStep.CODE_VERIFICATION && (
-                <div className="mb-6">
-                  <label className="block text-xs text-gray-500 mb-3">{t('signin.enter_code')}</label>
-                  
-                  <div className="my-8">
-                    <SecurityCodeInput
-                      value={verificationCode}
-                      onChange={setVerificationCode}
-                      onComplete={handleVerifyCode}
-                      disabled={loading}
-                    />
-                  </div>
-                  
-                  {/* Информация о коде в Telegram */}
-                  <div className="mt-6 mb-2">
-                    <div className="flex items-center justify-center bg-blue-50 p-4 rounded-md text-blue-800">
-                      <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
-                      </svg>
-                      <p className="text-sm">
-                        Код подтверждения отправлен в Telegram
-                      </p>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2 text-center">
-                      Проверьте ваши сообщения в Telegram для получения кода подтверждения
-                    </p>
-                  </div>
-                  
-                  {/* Кнопка "Отправить код повторно" */}
-                  <div className="mt-4 mb-4 text-center">
-                    <button
-                      className="text-[#38A2E1] text-sm hover:underline"
-                      onClick={handleRequestCode}
-                      disabled={loading}
-                    >
-                      {t('signin.resend_code')}
-                    </button>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
 
-              {/* Шаг 3: Вход с паролем (для существующих пользователей) */}
-              {authStep === AuthStep.PASSWORD_LOGIN && (
-                <div className="mb-6">
-                  <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
-                  <Input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full py-3 px-4 border border-gray-300 rounded-md mb-4"
-                  />
+              {/* Ввод номера телефона */}
+              <div className="mb-6">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.phone')}</label>
+                <Input
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+              </div>
+
+              {/* Чекбокс "Оставаться в системе" */}
+              <div className="flex items-center mb-6">
+                <Checkbox
+                  id="keep-signed-in"
+                  checked={keepSignedIn}
+                  onCheckedChange={(checked) => setKeepSignedIn(!!checked)}
+                  className="h-4 w-4 border-gray-300 rounded text-[#38A2E1]"
+                />
+                <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-600">
+                  {t('signin.keep_signed')}
+                </label>
+              </div>
+            </>
+          )}
+
+          {/* Шаг 2: Верификация кода */}
+          {authStep === AuthStep.CODE_VERIFICATION && (
+            <div className="mb-6">
+              <label className="block text-xs text-gray-500 mb-3">{t('signin.enter_code')}</label>
+              
+              <div className="my-8">
+                <SecurityCodeInput
+                  value={verificationCode}
+                  onChange={setVerificationCode}
+                  onComplete={handleVerifyCode}
+                  disabled={loading}
+                />
+              </div>
+              
+              {/* Информация о коде в Telegram */}
+              <div className="mt-6 mb-2">
+                <div className="flex items-center justify-center bg-blue-50 p-4 rounded-md text-blue-800">
+                  <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
+                  </svg>
+                  <p className="text-sm">
+                    Код подтверждения отправлен в Telegram
+                  </p>
                 </div>
-              )}
-
-              {/* Шаг 4: Регистрация (установка пароля для новых пользователей) */}
-              {authStep === AuthStep.REGISTER && (
-                <>
-                  <div className="mb-4">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.first_name')}</label>
-                    <Input
-                      type="text"
-                      value={firstName}
-                      onChange={(e) => setFirstName(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                  </div>
-                  
-                  <div className="mb-4">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.last_name')}</label>
-                    <Input
-                      type="text"
-                      value={lastName}
-                      onChange={(e) => setLastName(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                  </div>
-                  
-                  <div className="mb-4">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.email')}</label>
-                    <Input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                  </div>
-                  
-                  <div className="mb-4">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
-                    <Input
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                  </div>
-                  
-                  <div className="mb-6">
-                    <label className="block text-xs text-gray-500 mb-1">{t('signin.confirm_password')}</label>
-                    <Input
-                      type="password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
-                    />
-                    {password !== confirmPassword && confirmPassword && (
-                      <p className="text-red-500 text-xs mt-1">{t('signin.passwords_not_match')}</p>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* Кнопка действия (в зависимости от шага) */}
-              {renderActionButton()}
+                <p className="text-xs text-gray-500 mt-2 text-center">
+                  Проверьте ваши сообщения в Telegram для получения кода подтверждения
+                </p>
+              </div>
               
-              {/* Кнопка QR-входа - показываем только на первом шаге */}
-              {authStep === AuthStep.PHONE_INPUT && (
-                <Button
-                  variant="outline"
-                  className="w-full flex items-center justify-center gap-2 mt-3"
-                  onClick={() => setShowQRCodeModal(true)}
-                >
-                  <QrCode className="h-4 w-4" />
-                  {t('signin.qr_login')}
-                </Button>
-              )}
-              
-              {/* Кнопка "Назад" (показывается на всех шагах кроме первого) */}
-              {authStep !== AuthStep.PHONE_INPUT && (
-                <button 
-                  className="w-full text-[#38A2E1] text-sm mt-4 hover:underline"
-                  onClick={handleBack}
+              {/* Кнопка "Отправить код повторно" */}
+              <div className="mt-4 mb-4 text-center">
+                <button
+                  className="text-[#38A2E1] text-sm hover:underline"
+                  onClick={handleRequestCode}
                   disabled={loading}
                 >
-                  {t('signin.back')}
+                  {t('signin.resend_code')}
                 </button>
-              )}
+              </div>
             </div>
+          )}
+
+          {/* Шаг 3: Вход с паролем (для существующих пользователей) */}
+          {authStep === AuthStep.PASSWORD_LOGIN && (
+            <div className="mb-6">
+              <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full py-3 px-4 border border-gray-300 rounded-md mb-4"
+              />
+            </div>
+          )}
+
+          {/* Шаг 4: Регистрация (установка пароля для новых пользователей) */}
+          {authStep === AuthStep.REGISTER && (
+            <>
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.first_name')}</label>
+                <Input
+                  type="text"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.last_name')}</label>
+                <Input
+                  type="text"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.email')}</label>
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-xs text-gray-500 mb-1">{t('signin.confirm_password')}</label>
+                <Input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                />
+                {password !== confirmPassword && confirmPassword && (
+                  <p className="text-red-500 text-xs mt-1">{t('signin.passwords_not_match')}</p>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Кнопка действия (в зависимости от шага) */}
+          {renderActionButton()}
+          
+          {/* Кнопка QR-входа - показываем только на первом шаге */}
+          {authStep === AuthStep.PHONE_INPUT && (
+            <Button
+              variant="outline"
+              className="w-full flex items-center justify-center gap-2 mt-3"
+              onClick={() => setShowQRCodeModal(true)}
+            >
+              <QrCode className="h-4 w-4" />
+              {t('signin.qr_login')}
+            </Button>
+          )}
+          
+          {/* Кнопка "Назад" (показывается на всех шагах кроме первого) */}
+          {authStep !== AuthStep.PHONE_INPUT && (
+            <button 
+              className="w-full text-[#38A2E1] text-sm mt-4 hover:underline"
+              onClick={handleBack}
+              disabled={loading}
+            >
+              {t('signin.back')}
+            </button>
+          )}
+        </div>
 
         {/* Выбор языка */}
         <div className="mt-8 text-center">
