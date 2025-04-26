@@ -62,6 +62,142 @@ export const translations: Record<string, TranslationKey> = {
     ru: "Отправить"
   },
   
+  // Страница авторизации
+  "signin.title": {
+    en: "Sign In",
+    ru: "Вход в систему"
+  },
+  "signin.subtitle": {
+    en: "Welcome back",
+    ru: "Добро пожаловать"
+  },
+  "signin.phone": {
+    en: "Please enter your phone number",
+    ru: "Пожалуйста, введите ваш номер телефона"
+  },
+  "signin.country": {
+    en: "Country",
+    ru: "Страна"
+  },
+  "signin.next": {
+    en: "Next",
+    ru: "Далее"
+  },
+  "signin.user_login": {
+    en: "User Login",
+    ru: "Вход пользователя"
+  },
+  "signin.admin_login": {
+    en: "Admin Login",
+    ru: "Вход администратора"
+  },
+  "signin.verification": {
+    en: "Verification",
+    ru: "Подтверждение"
+  },
+  "signin.code_sent": {
+    en: "Code sent to",
+    ru: "Код отправлен на"
+  },
+  "signin.enter_code": {
+    en: "Enter verification code",
+    ru: "Введите код подтверждения"
+  },
+  "signin.resend_code": {
+    en: "Resend code",
+    ru: "Отправить код повторно"
+  },
+  "signin.verify": {
+    en: "Verify",
+    ru: "Подтвердить"
+  },
+  "signin.back": {
+    en: "Back",
+    ru: "Назад"
+  },
+  "signin.keep_signed": {
+    en: "Keep me signed in",
+    ru: "Оставаться в системе"
+  },
+  "signin.enter_password": {
+    en: "Enter Password",
+    ru: "Введите пароль"
+  },
+  "signin.password_prompt": {
+    en: "Please enter your password to login",
+    ru: "Пожалуйста, введите пароль для входа"
+  },
+  "signin.login": {
+    en: "Login",
+    ru: "Войти"
+  },
+  "signin.setup_password": {
+    en: "Setup Password",
+    ru: "Создание пароля"
+  },
+  "signin.create_password": {
+    en: "Create a password for your account",
+    ru: "Создайте пароль для вашей учетной записи"
+  },
+  "signin.passwords_not_match": {
+    en: "Passwords do not match",
+    ru: "Пароли не совпадают"
+  },
+  "signin.register": {
+    en: "Register",
+    ru: "Зарегистрироваться"
+  },
+  "signin.admin_info": {
+    en: "This section is for administrators only",
+    ru: "Этот раздел только для администраторов"
+  },
+  "signin.go_admin": {
+    en: "Go to admin login",
+    ru: "Перейти к входу администратора"
+  },
+  
+  // QR-код авторизации
+  "qr.login": {
+    en: "Login with QR Code",
+    ru: "Войти через QR-код"
+  },
+  "qr.title": {
+    en: "Login with QR Code",
+    ru: "Войти через QR-код"
+  }, 
+  "qr.description": {
+    en: "Scan the QR code in the Telegram app for quick login",
+    ru: "Отсканируйте QR-код в приложении Telegram для быстрого входа"
+  },
+  "qr.loading": {
+    en: "Loading QR code...",
+    ru: "Загрузка QR-кода..."
+  },
+  "qr.failed": {
+    en: "Failed to load QR code",
+    ru: "Не удалось загрузить QR-код"
+  },
+  "qr.time_left": {
+    en: "Time left",
+    ru: "Осталось времени"
+  },
+  "qr.valid_for": {
+    en: "QR code is valid for",
+    ru: "QR-код действителен в течение"
+  },
+  "qr.minutes": {
+    en: "minutes",
+    ru: "минут"
+  },
+  "qr.waiting": {
+    en: "Waiting for scan...",
+    ru: "Ожидание сканирования..."
+  },
+  "qr.refresh": {
+    en: "Refresh QR Code",
+    ru: "Обновить QR-код"
+  },
+  
   // Чаты и сообщения
   your_chats: {
     en: "Your Chats",

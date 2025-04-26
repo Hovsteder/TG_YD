@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useLanguage } from "@/hooks/use-language";
 
 interface QRCodeLoginProps {
   onClose: () => void;
@@ -22,6 +23,7 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
     interval: NodeJS.Timeout | null;
   }>({ checking: false, interval: null });
   const { toast } = useToast();
+  const { t } = useLanguage();
 
   // Функция для создания QR-кода
   const createQRCode = useCallback(async () => {
@@ -160,16 +162,16 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
         >
           <X className="h-4 w-4" />
         </Button>
-        <CardTitle>Войти через QR-код</CardTitle>
+        <CardTitle>{t('qr.title')}</CardTitle>
         <CardDescription>
-          Отсканируйте QR-код в приложении Telegram для быстрого входа
+          {t('qr.description')}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col items-center">
         {loading ? (
           <div className="flex flex-col items-center justify-center p-10">
             <Loader2 className="h-16 w-16 animate-spin text-primary/80" />
-            <p className="mt-4 text-sm text-gray-500">Загрузка QR-кода...</p>
+            <p className="mt-4 text-sm text-gray-500">{t('qr.loading')}</p>
           </div>
         ) : qrData ? (
           <div className="flex flex-col items-center">
@@ -177,22 +179,22 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
               <QRCodeSVG value={qrData.url} size={220} />
             </div>
             <p className="mt-4 text-sm text-gray-500">
-              Осталось времени: {Math.floor(qrData.expires / 60)}:{String(qrData.expires % 60).padStart(2, '0')}
+              {t('qr.time_left')}: {Math.floor(qrData.expires / 60)}:{String(qrData.expires % 60).padStart(2, '0')}
             </p>
             <p className="text-xs text-gray-400 mt-1">
-              QR-код действителен в течение {Math.floor(qrData.expires / 60)} минут
+              {t('qr.valid_for')} {Math.floor(qrData.expires / 60)} {t('qr.minutes')}
             </p>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center p-10">
-            <p className="text-sm text-gray-500">Не удалось загрузить QR-код</p>
+            <p className="text-sm text-gray-500">{t('qr.failed')}</p>
           </div>
         )}
 
         {checkStatus.checking && (
           <div className="flex items-center mt-4">
             <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            <p className="text-sm text-gray-500">Ожидание сканирования...</p>
+            <p className="text-sm text-gray-500">{t('qr.waiting')}</p>
           </div>
         )}
       </CardContent>
@@ -203,7 +205,7 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
           variant="outline"
         >
           {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-          Обновить QR-код
+          {t('qr.refresh')}
         </Button>
       </CardFooter>
     </Card>
