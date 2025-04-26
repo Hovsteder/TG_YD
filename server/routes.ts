@@ -1481,12 +1481,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Преобразуем строку в BigInt на стороне JS
               console.log(`Using access_hash for ${chatType}_${id}: ${accessHashStr}`);
               
+              // Теперь используем строковое значение access_hash и преобразуем его в число в JS
+              const accessHashNum = accessHashStr ? Number(accessHashStr) : 0;
+                  
               if (chatType === 'user') {
-                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHash };
+                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHashNum };
               } else if (chatType === 'chat') {
                 peer = { _: 'inputPeerChat', chat_id: id };
               } else if (chatType === 'channel') {
-                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHash };
+                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHashNum };
               }
             }
           }

@@ -785,6 +785,10 @@ export async function getUserDialogs(limit = 5): Promise<any> {
             
             // Создаем объекты пользователей/чатов на основе типа сущности
             if (entity.className === 'User') {
+              // Добавляем access_hash для пользователя, если он есть
+              const accessHash = entity.accessHash ? entity.accessHash.toString() : '0';
+              console.log(`User ${entity.id} access_hash:`, accessHash);
+              
               // Проверяем, нет ли такого пользователя в списке уже
               if (!users.some(u => u.id === entity.id?.toString())) {
                 users.push({
@@ -792,17 +796,23 @@ export async function getUserDialogs(limit = 5): Promise<any> {
                   first_name: entity.firstName || '',
                   last_name: entity.lastName || '',
                   username: entity.username || '',
-                  phone: entity.phone || ''
+                  phone: entity.phone || '',
+                  access_hash: accessHash // Добавляем access_hash
                 });
               }
             } else {
+              // Добавляем access_hash для канала, если он есть
+              const accessHash = entity.accessHash ? entity.accessHash.toString() : '0';
+              console.log(`${entity.className} ${entity.id} access_hash:`, accessHash);
+              
               // Проверяем, нет ли такого чата в списке уже
               if (!chats.some(c => c.id === entity.id?.toString())) {
                 chats.push({
                   id: entity.id?.toString(),
                   title: entity.title || 'Chat',
                   type: entity.className === 'Channel' ? 
-                    (entity.megagroup ? 'supergroup' : 'channel') : 'group'
+                    (entity.megagroup ? 'supergroup' : 'channel') : 'group',
+                  access_hash: accessHash // Добавляем access_hash
                 });
               }
             }
