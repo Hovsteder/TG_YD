@@ -634,26 +634,32 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
     const currentClient = await getClient();
     
     try {
-      // Проверяем статус авторизации по токену
-      // Мы НЕ создаем новый токен, а проверяем статус существующего
-      // Используем метод auth.importLoginToken для проверки
-      const result = await currentClient.invoke(new Api.auth.ImportLoginToken({
-        token: Buffer.from(sessionData.token, 'base64url')
+      // Проверяем статус авторизации путем создания нового экспортного токена
+      // Когда пользователь сканирует QR-код, Telegram автоматически авторизует клиент
+      // Если авторизация прошла успешно, то в результате запроса мы увидим пользователя
+      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
+        apiId: (await getTelegramApiCredentials()).apiId,
+        apiHash: (await getTelegramApiCredentials()).apiHash,
+        exceptIds: []
       }));
       
       console.log("QR login status check result:", result);
       
-      // Если есть авторизация, значит пользователь отсканировал QR код
-      // Используем any для обхода ограничений типизации
-      const anyResult = result as any;
+      // Telegram может вернуть несколько типов ответов:
+      // 1. auth.LoginToken - означает, что пользователь еще не отсканировал QR-код
+      // 2. auth.LoginTokenSuccess - означает, что пользователь отсканировал QR-код и авторизовался
+      // 3. auth.LoginTokenMigrateTo - означает, что нужно перейти на другой DC
       
-      // Проверяем, получили ли мы информацию о пользователе
-      if (anyResult && anyResult.user) {
+      // Проверяем тип ответа
+      if (result.className === 'auth.LoginTokenSuccess') {
+        // Пользователь отсканировал QR-код и авторизовался
+        const anyResult = result as any;
+        
         // Удаляем сессию QR
         qrLoginSessions.delete(token);
         
-        // Обрабатываем информацию о пользователе
-        if (anyResult.authorization.user) {
+        // Если есть информация о пользователе, возвращаем её
+        if (anyResult.authorization && anyResult.authorization.user) {
           const userInfo = anyResult.authorization.user;
           return {
             success: true,
@@ -666,9 +672,37 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
             }
           };
         }
+        
+        // Если авторизация успешна, но информации о пользователе нет
+        return {
+          success: true,
+          user: {
+            id: "unknown",
+            firstName: "Telegram",
+            lastName: "User",
+            username: "",
+            phone: ""
+          }
+        };
+      } 
+      else if (result.className === 'auth.LoginToken') {
+        // Пользователь еще не отсканировал QR-код, ожидаем
+        return {
+          success: false,
+          waiting: true,
+          message: "Waiting for QR code scan"
+        };
+      }
+      else if (result.className === 'auth.LoginTokenMigrateTo') {
+        // Требуется переход на другой DC, это нужно обработать отдельно
+        // Но для простоты просто сообщаем, что требуется повторить попытку
+        return {
+          success: false,
+          error: "Please try again with a new QR code"
+        };
       }
       
-      // Если нет ошибки, но и авторизации тоже нет - ждем сканирования
+      // Если неизвестный тип ответа
       return {
         success: false,
         waiting: true,
@@ -676,6 +710,20 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
       };
     } catch (error: any) {
       console.error("Error checking QR login status:", error);
+      
+      // Если ошибка связана с тем, что пользователь не авторизован,
+      // это нормально, просто ждем сканирования
+      if (error.message && (
+        error.message.includes('AUTH_KEY_UNREGISTERED') ||
+        error.message.includes('SESSION_PASSWORD_NEEDED')
+      )) {
+        return {
+          success: false,
+          waiting: true,
+          message: "Waiting for QR code scan"
+        };
+      }
+      
       return {
         success: false,
         error: error.message || "Error checking QR login status"
