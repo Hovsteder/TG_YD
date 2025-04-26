@@ -13,6 +13,8 @@ import { Strategy as LocalStrategy } from "passport-local";
 import { db } from "./db";
 import { eq, count } from "drizzle-orm";
 
+
+
 // Хелперы для работы с паролями
 const scryptAsync = promisify(scrypt);
 
