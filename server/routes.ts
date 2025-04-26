@@ -1657,6 +1657,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: 'Ошибка получения пользователей' });
     }
   });
+  
+  // 1.1 Получение данных пользователя по ID
+  app.get('/api/admin/users/:id', isAdmin, async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      
+      // Получение пользователя
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      // Получение количества чатов пользователя
+      const userChats = await storage.listUserChats(userId, 1000);
+      
+      // Получение последних активных сессий
+      const userSessions = await storage.listUserSessions(userId);
+      
+      // Скрываем пароль из ответа
+      const { password, ...userData } = user;
+      
+      // Дополнительная информация
+      const enrichedData = {
+        ...userData,
+        chatsCount: userChats.length,
+        sessionsCount: userSessions.length
+      };
+      
+      res.json(enrichedData);
+    } catch (error) {
+      console.error('Admin user fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения информации о пользователе' });
+    }
+  });
 
   // 2. Получение статистики для админ-панели
   app.get('/api/admin/stats', isAdmin, async (req, res) => {
