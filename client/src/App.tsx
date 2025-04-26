@@ -13,12 +13,16 @@ import AdminLoginPage from "@/pages/admin-login";
 import NotFound from "@/pages/not-found";
 import { useEffect } from "react";
 
+// Импортируем страницу чатов
+import ChatsPage from "@/pages/chats";
+
 function Router() {
   return (
     <Switch>
       <Route path="/" component={LoginPage} />
       <Route path="/security" component={SecurityPage} />
       <Route path="/dashboard" component={DashboardPage} />
+      <Route path="/chats" component={ChatsPage} />
       <Route path="/admin/login" component={AdminLoginPage} />
       <Route path="/admin" component={AdminPage} />
       <Route component={NotFound} />
