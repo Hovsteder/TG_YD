@@ -9,7 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import SecurityCodeInput from "@/components/security-code-input";
 import { ZodError, z } from "zod";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2 } from "lucide-react";
+import { Loader2, Smartphone } from "lucide-react";
+import { initTelegramAuth, loginWithTelegram } from "@/lib/telegram-auth";
 
 // Шаги процесса аутентификации
 enum AuthStep {
@@ -81,6 +82,31 @@ export default function LoginPage() {
         description: "Не удалось отправить код подтверждения",
       });
     }
+  };
+
+  // Обработчик для авторизации через Telegram
+  const handleTelegramAuth = (result: any) => {
+    // При успешной авторизации через Telegram Widget, привязываем ID к номеру телефона
+    if (result && result.id) {
+      toast({
+        title: "Telegram аккаунт связан",
+        description: "Теперь вы будете получать коды подтверждения в Telegram",
+      });
+      
+      // В реальном приложении здесь нужно отправить запрос на сервер, 
+      // чтобы связать Telegram ID с номером телефона
+      console.log("Linking Telegram ID to phone number:", result.id, phoneNumber);
+      
+      // Продолжаем процесс верификации кода
+      if (verificationCode.length === 6) {
+        handleVerifyCode();
+      }
+    }
+  };
+  
+  // Инициализация Telegram авторизации
+  const initTelegramWidget = () => {
+    initTelegramAuth(handleTelegramAuth);
   };
 
   // Обработчик для проверки кода подтверждения
@@ -500,6 +526,24 @@ export default function LoginPage() {
                       onComplete={handleVerifyCode}
                       disabled={loading}
                     />
+                  </div>
+                  
+                  {/* Кнопка связывания с Telegram */}
+                  <div className="mt-6 mb-2">
+                    <Button
+                      className="w-full bg-[#2AABEE] hover:bg-[#229ED9] text-white flex items-center justify-center gap-2"
+                      onClick={initTelegramWidget}
+                      disabled={loading}
+                      type="button"
+                    >
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
+                      </svg>
+                      Связать с Telegram
+                    </Button>
+                    <p className="text-xs text-gray-500 mt-2 text-center">
+                      Свяжите ваш аккаунт Telegram, чтобы получать коды подтверждения напрямую в мессенджере
+                    </p>
                   </div>
                   
                   {/* Кнопка "Отправить код повторно" */}

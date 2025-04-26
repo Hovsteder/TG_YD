@@ -352,6 +352,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // === ИНТЕГРАЦИЯ С TELEGRAM ДЛЯ АУТЕНТИФИКАЦИИ ===
+
+  // Связывание Telegram ID с номером телефона
+  app.post('/api/auth/telegram/link', async (req, res) => {
+    try {
+      const { telegramId, phoneNumber } = req.body;
+      
+      if (!telegramId || !phoneNumber) {
+        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
+      }
+      
+      // Валидация telegramId через Bot API
+      try {
+        const { getTelegramUserData } = await import('./telegram');
+        const telegramUser = await getTelegramUserData(telegramId);
+        
+        if (!telegramUser) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Не удалось получить данные пользователя Telegram' 
+          });
+        }
+      } catch (telegramError) {
+        console.error('Error validating Telegram ID:', telegramError);
+      }
+      
+      // Проверяем, существует ли пользователь с таким номером телефона
+      let user = await storage.getUserByPhoneNumber(phoneNumber);
+      
+      if (user) {
+        // Обновляем Telegram ID для существующего пользователя
+        user = await storage.updateUser(user.id, { 
+          telegramId,
+          // Добавляем данные из Telegram при необходимости
+          ...(user.firstName ? {} : { firstName: req.body.firstName || null }),
+          ...(user.lastName ? {} : { lastName: req.body.lastName || null }),
+          ...(user.username ? {} : { username: req.body.username || null }),
+          ...(user.avatarUrl ? {} : { avatarUrl: req.body.photoUrl || null })
+        }) || user;
+        
+        // Создаем лог о связывании
+        await storage.createLog({
+          userId: user.id,
+          action: 'telegram_linked',
+          details: { telegramId, phoneNumber },
+          ipAddress: req.ip
+        });
+        
+        return res.json({
+          success: true,
+          message: 'Telegram ID успешно связан с номером телефона'
+        });
+      } else {
+        // Пользователь не существует
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Пользователь с таким номером телефона не найден' 
+        });
+      }
+    } catch (error) {
+      console.error('Error linking Telegram ID:', error);
+      res.status(500).json({ message: 'Ошибка при связывании Telegram ID' });
+    }
+  });
+
   // === НОВАЯ СИСТЕМА АВТОРИЗАЦИИ ПО ТЕЛЕФОНУ ===
 
   // 1. Запрос кода подтверждения по телефону

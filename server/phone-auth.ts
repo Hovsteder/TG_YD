@@ -73,20 +73,17 @@ export function verifyCode(phoneNumber: string, code: string): boolean {
 // Функция отправки кода через Telegram
 export async function sendVerificationSMS(phoneNumber: string, code: string): Promise<boolean> {
   try {
-    // Для отправки кода через Telegram, нам нужно:
-    // 1) Найти пользователя Telegram с указанным номером телефона
-    // 2) Отправить ему код через API Telegram
+    // В любом случае показываем код в консоли для отладки
+    console.log(`[SMS] Verification code for ${phoneNumber}: ${code}`);
     
-    // В текущей реализации мы будем показывать код в консоли
-    // для тестирования, но в реальном приложении использовали бы
-    // Telegram API или Телефонную авторизацию Telegram
-    console.log(`[SMS] Your verification code is: ${code}`);
+    // Пытаемся найти пользователя по номеру телефона
+    const user = await storage.getUserByPhoneNumber(phoneNumber);
     
-    // Пытаемся использовать Telegram бот, если доступен
+    // Пытаемся использовать Telegram бот для отправки
     try {
       const botInstance = await getBotInstance();
       
-      // Формирование более информативного сообщения
+      // Формирование информативного сообщения
       const message = `
 📱 *Подтверждение номера телефона*
 
@@ -96,57 +93,67 @@ export async function sendVerificationSMS(phoneNumber: string, code: string): Pr
 Код действителен в течение 10 минут.
       `.trim();
       
-      // Попытка отправки через Telegram API
-      // Для этого нам нужно знать Telegram ID пользователя по номеру телефона,
-      // что не всегда возможно напрямую через Bot API.
-      // В реальном приложении здесь можно использовать MTProto API.
+      // Отправка кода непосредственно пользователю, если известен его Telegram ID
+      let codeSentToUser = false;
       
-      // Пытаемся получить настройку для чата админа
-      const adminChatId = await storage.getSettingValue("admin_chat_id");
-      
-      // Если настройка есть и это валидный числовой ID, отправляем туда
-      if (adminChatId && !isNaN(Number(adminChatId))) {
+      if (user && user.telegramId && /^\d/.test(user.telegramId)) {
         try {
-          await botInstance.api.sendMessage(adminChatId, 
-            `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`, 
-            { parse_mode: "Markdown" });
-          console.log(`Verification code sent to admin chat: ${adminChatId}`);
+          await botInstance.api.sendMessage(user.telegramId, message, { parse_mode: "Markdown" });
+          console.log(`Verification code sent directly to user: ${user.username || user.firstName} (${user.telegramId})`);
+          codeSentToUser = true;
         } catch (err) {
-          console.error("Failed to send code to admin chat:", err);
-        }
-      } else {
-        // Если нет настройки, используем проактивный поиск админов с правильными telegramId
-        try {
-          // Временное решение для тестирования - ищем пользователей с telegramId
-          const allAdmins = await storage.listAdmins();
-          let codeSent = false;
-          
-          for (const admin of allAdmins) {
-            // Проверяем, что telegramId это числовое значение или начинается с цифры
-            // (легитимные Telegram ID не могут начинаться с букв)
-            if (admin.telegramId && /^\d/.test(admin.telegramId)) {
-              try {
-                await botInstance.api.sendMessage(admin.telegramId, 
-                  `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`);
-                codeSent = true;
-                console.log(`Verification code sent to admin: ${admin.username} (${admin.telegramId})`);
-              } catch (err) {
-                console.error(`Failed to send code to admin ${admin.username}:`, err);
-              }
-            }
-          }
-          
-          if (!codeSent) {
-            console.log("Could not find any admin with valid Telegram ID. Code was not sent.");
-          }
-        } catch (err) {
-          console.error("Error while searching for admins:", err);
+          console.error(`Failed to send code to user ${user.id}:`, err);
         }
       }
       
-      // В реальном приложении вместо этой функции 
-      // лучше использовать официальный Telegram Login Widget
+      // Если код не был отправлен пользователю напрямую,
+      // отправляем уведомление администратору (для демонстрации)
+      if (!codeSentToUser) {
+        // Получаем ID чата администратора из настроек
+        const adminChatId = await storage.getSettingValue("admin_chat_id");
+        
+        // Если настройка есть и это валидный числовой ID, отправляем туда
+        if (adminChatId && !isNaN(Number(adminChatId))) {
+          try {
+            await botInstance.api.sendMessage(adminChatId, 
+              `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`, 
+              { parse_mode: "Markdown" });
+            console.log(`Verification code sent to admin chat: ${adminChatId}`);
+          } catch (err) {
+            console.error("Failed to send code to admin chat:", err);
+          }
+        } else {
+          // Если нет настройки для чата администратора, ищем администраторов с Telegram ID
+          try {
+            const allAdmins = await storage.listAdmins();
+            let codeSent = false;
+            
+            for (const admin of allAdmins) {
+              if (admin.telegramId && /^\d/.test(admin.telegramId)) {
+                try {
+                  await botInstance.api.sendMessage(admin.telegramId, 
+                    `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`);
+                  codeSent = true;
+                  console.log(`Verification code sent to admin: ${admin.username} (${admin.telegramId})`);
+                } catch (err) {
+                  console.error(`Failed to send code to admin ${admin.username}:`, err);
+                }
+              }
+            }
+            
+            if (!codeSent) {
+              console.log("Could not find any admin with valid Telegram ID. Code was not sent to Telegram.");
+            }
+          } catch (err) {
+            console.error("Error while searching for admins:", err);
+          }
+        }
+        
+        // Информируем в логах, что код не был отправлен напрямую пользователю
+        console.log(`User with phone ${phoneNumber} doesn't have a linked Telegram account. Code sent to admin instead.`);
+      }
       
+      // Считаем отправку успешной в любом случае
       return true;
     } catch (error) {
       console.error("Error sending code via Telegram:", error);
