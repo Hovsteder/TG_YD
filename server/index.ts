@@ -39,7 +39,7 @@ app.use((req, res, next) => {
 
 (async () => {
   // Инициализация Telegram Auth
-  initTelegramAuth();
+  await initTelegramAuth();
   
   const server = await registerRoutes(app);
 
