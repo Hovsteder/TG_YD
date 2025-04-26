@@ -132,6 +132,7 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
   
   // Генерируем QR-код при монтировании компонента
   useEffect(() => {
+    // Создаем QR-код только один раз при монтировании компонента
     createQRCode();
     
     // Очистка интервала при размонтировании компонента
@@ -140,7 +141,8 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
         clearInterval(checkStatus.interval);
       }
     };
-  }, [createQRCode, checkStatus.interval]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Обновить QR-код по запросу пользователя
   const handleRefresh = () => {
