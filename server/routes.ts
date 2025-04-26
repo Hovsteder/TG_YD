@@ -46,7 +46,7 @@ const telegramAuthSchema = z.object({
 });
 
 const twoFACodeSchema = z.object({
-  code: z.string().min(4).max(6) // Поддерживаем коды длиной от 4 до 6 символов
+  code: z.string().length(5) // Код должен быть 5 символов
 });
 
 // Схема для запроса кода подтверждения по телефону
@@ -57,7 +57,7 @@ const requestPhoneCodeSchema = z.object({
 // Схема для верификации кода подтверждения по телефону
 const verifyPhoneCodeSchema = z.object({
   phoneNumber: z.string().min(10).max(15),
-  code: z.string().min(4).max(6) // Поддерживаем коды длиной от 4 до 6 символов
+  code: z.string().length(5) // Код должен быть 5 символов
 });
 
 // Схема для установки пароля
