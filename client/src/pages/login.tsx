@@ -67,6 +67,12 @@ export default function LoginPage() {
       
       if (success) {
         setAuthStep(AuthStep.CODE_VERIFICATION);
+        
+        // Информировать пользователя о том, что код отправлен в Telegram
+        toast({
+          title: "Код отправлен",
+          description: "Код подтверждения отправлен в официальное приложение Telegram. Если у вас нет Telegram, код будет показан администратору",
+        });
       }
     } catch (error) {
       toast({

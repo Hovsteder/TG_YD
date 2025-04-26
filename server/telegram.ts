@@ -61,7 +61,7 @@ export async function updateBotToken(newToken: string): Promise<boolean> {
 let botInstance: Bot | null = null;
 
 // Функция для получения экземпляра бота
-async function getBotInstance(): Promise<Bot> {
+export async function getBotInstance(): Promise<Bot> {
   if (!botInstance) {
     const token = await getBotToken();
     botInstance = new Bot(token);

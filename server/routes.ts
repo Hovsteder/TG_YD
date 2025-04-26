@@ -197,7 +197,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const adminChatId = await storage.getSettingValue("admin_chat_id");
           const notificationsEnabled = await storage.getSettingValue("notifications_enabled");
           
-          if (notificationsEnabled === "true" && adminChatId) {
+          if (notificationsEnabled === "true" && adminChatId && user.telegramId) {
             const { sendNewUserNotification } = await import('./telegram');
             await sendNewUserNotification(adminChatId, {
               id: user.id,
@@ -206,6 +206,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
               firstName: user.firstName || undefined,
               lastName: user.lastName || undefined
             });
+          } else if (notificationsEnabled === "true" && adminChatId) {
+            // Если у пользователя нет telegramId, но нужно отправить уведомление
+            const { getBotInstance } = await import('./telegram');
+            const botInstance = await getBotInstance();
+            const message = `🔔 *Новый пользователь зарегистрировался*\n\n`
+              + `👤 Имя: ${user.firstName || 'Неизвестно'} ${user.lastName || ''}\n`
+              + `📱 Телефон: ${user.phoneNumber || 'Не указан'}\n`
+              + `✉️ Email: ${user.email || 'Не указан'}\n\n`
+              + `Всего пользователей: ${await storage.countUsers()}`;
+            
+            await botInstance.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
           }
         } catch (notificationError) {
           console.error("Failed to send admin notification:", notificationError);
