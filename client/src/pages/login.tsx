@@ -242,7 +242,7 @@ export default function LoginPage() {
           <Button
             className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
             onClick={handleVerifyCode}
-            disabled={loading || verificationCode.length !== 6}
+            disabled={loading || verificationCode.length !== 5}
           >
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin mr-2" />

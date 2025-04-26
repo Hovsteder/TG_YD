@@ -36,12 +36,12 @@ export default function SecurityCodeInput({
     onChange(newInputs.join(""));
 
     // Перемещаем фокус на следующее поле
-    if (char && index < 5) {
+    if (char && index < 4) {
       inputRefs.current[index + 1]?.focus();
     }
 
     // Вызываем onComplete, если все поля заполнены
-    if (newInputs.filter(Boolean).length === 6 && onComplete) {
+    if (newInputs.filter(Boolean).length === 5 && onComplete) {
       onComplete();
     }
   };
@@ -59,7 +59,7 @@ export default function SecurityCodeInput({
       inputRefs.current[index - 1]?.focus();
     }
     
-    if (e.key === "ArrowRight" && index < 5) {
+    if (e.key === "ArrowRight" && index < 4) {
       e.preventDefault();
       inputRefs.current[index + 1]?.focus();
     }
@@ -73,13 +73,13 @@ export default function SecurityCodeInput({
     // Проверяем, что вставлены только цифры
     if (!/^\d+$/.test(pastedData)) return;
     
-    // Создаем массив из вставленных символов (не более 6)
-    const chars = pastedData.split("").slice(0, 6);
-    const newInputs = [...Array(6).fill("")];
+    // Создаем массив из вставленных символов (не более 5)
+    const chars = pastedData.split("").slice(0, 5);
+    const newInputs = [...Array(5).fill("")];
     
     // Заполняем inputs вставленными символами
     chars.forEach((char, i) => {
-      if (i < 6) newInputs[i] = char;
+      if (i < 5) newInputs[i] = char;
     });
     
     setInputs(newInputs);
@@ -90,11 +90,11 @@ export default function SecurityCodeInput({
     if (nextEmptyIndex !== -1) {
       inputRefs.current[nextEmptyIndex]?.focus();
     } else {
-      inputRefs.current[5]?.focus();
+      inputRefs.current[4]?.focus();
     }
     
     // Вызываем onComplete, если все поля заполнены
-    if (newInputs.filter(Boolean).length === 6 && onComplete) {
+    if (newInputs.filter(Boolean).length === 5 && onComplete) {
       onComplete();
     }
   };
