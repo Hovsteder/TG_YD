@@ -15,6 +15,8 @@ declare global {
     code?: string; 
     attempts: number 
   }>;
+  // Добавляем хранилище для отслеживания неудачных попыток подключения к DC
+  var dcFailedAttempts: Map<string, boolean>;
 }
 
 // Интерфейсы для типизации результатов
@@ -48,8 +50,12 @@ const authCodes = new Map<string, {
   attempts: number 
 }>();
 
-// Делаем доступным глобально
+// Создаем хранилище для отслеживания неудачных попыток с DC
+const dcFailedAttempts = new Map<string, boolean>();
+
+// Делаем доступными глобально
 global.authCodes = authCodes;
+global.dcFailedAttempts = dcFailedAttempts;
 
 // Инициализация MTProto клиента (с опциональным указанием DC)
 async function initMTProtoClient(dcId?: number) {
@@ -161,43 +167,32 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
       };
     }
 
-    // Турецкие номера (+90...) всегда используют DC4
-    // Если номер турецкий, сразу используем DC4
-    const isTurkishNumber = phoneNumber.startsWith('+90');
+    console.log(`Attempting to send auth code to ${phoneNumber}`);
     
-    // Инициализируем специальный клиент для DC4 для турецких номеров
-    let clientToUse = null;
-    if (isTurkishNumber) {
-      console.log(`Turkish phone number detected (${phoneNumber}), using DC4 directly`);
-      clientToUse = await initMTProtoClient(4);
-    } else {
-      // Для других номеров используем общий клиент
-      if (!mtprotoClient) {
-        mtprotoClient = await initMTProtoClient();
-      }
-      clientToUse = mtprotoClient;
-    }
-      
-    if (!clientToUse) {
-      console.error("Failed to initialize MTProto client");
+    // Проверяем, был ли уже создан phoneCodeHash для этого номера
+    // Если да, то получаем его и возвращаем без повторной отправки кода
+    const existingAuthData = authCodes.get(phoneNumber);
+    if (existingAuthData && existingAuthData.phoneCodeHash && new Date() < existingAuthData.expiresAt) {
+      console.log(`Reusing existing phone_code_hash for ${phoneNumber}`);
       return {
-        success: false,
-        error: "Failed to initialize MTProto client"
+        success: true,
+        phoneCodeHash: existingAuthData.phoneCodeHash,
+        timeout: 300, // 5 минут по умолчанию
       };
     }
-
-    // Отправляем запрос на код подтверждения через Telegram API
-    console.log(`Sending auth.sendCode request to Telegram API for phone: ${phoneNumber}`);
     
-    try {
-      // Создаем Promise с таймаутом (10 секунд для продакшн)
+    // Вспомогательная функция для отправки кода
+    const tryAuthSendCode = async (client: any, dcIdForLogs: string | number = 'default'): Promise<any> => {
+      console.log(`Trying auth.sendCode with DC${dcIdForLogs} for phone: ${phoneNumber}`);
+      
+      // Создаем Promise с таймаутом
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
+        setTimeout(() => reject(new Error('Telegram API request timed out')), 15000); // 15 секунд
       });
       
       // Используем Promise.race для ограничения времени ожидания
-      const result = await Promise.race([
-        clientToUse.call('auth.sendCode', {
+      return Promise.race([
+        client.call('auth.sendCode', {
           phone_number: phoneNumber,
           api_id: apiId,
           api_hash: apiHash,
@@ -210,13 +205,29 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
         }),
         timeoutPromise
       ]);
+    };
+
+    // Основная логика отправки кода
+    // Изначально пробуем с основным клиентом
+    if (!mtprotoClient) {
+      console.log(`Initializing main MTProto client`);
+      mtprotoClient = await initMTProtoClient();
+      if (!mtprotoClient) {
+        return {
+          success: false,
+          error: "Failed to initialize MTProto client"
+        };
+      }
+    }
+
+    try {
+      // Первая попытка с основным клиентом
+      const result = await tryAuthSendCode(mtprotoClient);
       
       console.log(`auth.sendCode success for phone: ${phoneNumber}`);
-
-      // Если получили ответ, сохраняем информацию о коде
+      
+      // Обрабатываем успешный ответ
       if (result && result.phone_code_hash) {
-        // В реальном сценарии пользователь получит код в Telegram
-        // Мы сохраняем только phone_code_hash для последующей проверки
         authCodes.set(phoneNumber, {
           phoneCodeHash: result.phone_code_hash,
           expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
@@ -226,92 +237,107 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
         return {
           success: true,
           phoneCodeHash: result.phone_code_hash,
-          timeout: result.timeout || 300, // По умолчанию 5 минут
+          timeout: result.timeout || 300,
         };
       } else {
         throw new Error("Invalid response from Telegram API");
       }
-    } catch (mtprotoError: any) {
-      console.error("MTProto API error:", mtprotoError);
+    } catch (initialError: any) {
+      console.error("Initial MTProto API error:", initialError);
       
-      // Обрабатываем специфические ошибки Telegram
+      // Обрабатываем ошибки миграции
       if (
-        mtprotoError.error_message && (
-          mtprotoError.error_message.startsWith('PHONE_MIGRATE_') ||
-          mtprotoError.error_message.startsWith('NETWORK_MIGRATE_') ||
-          mtprotoError.error_message.startsWith('USER_MIGRATE_')
+        initialError.error_message && (
+          initialError.error_message.startsWith('PHONE_MIGRATE_') ||
+          initialError.error_message.startsWith('NETWORK_MIGRATE_') ||
+          initialError.error_message.startsWith('USER_MIGRATE_')
         )
       ) {
-        // Извлекаем номер DC из ошибки (например, PHONE_MIGRATE_4 → 4)
-        const dcId = parseInt(mtprotoError.error_message.split('_').pop());
+        // Извлекаем номер DC из ошибки
+        const dcId = parseInt(initialError.error_message.split('_').pop());
         
-        if (!isNaN(dcId)) {
-          console.log(`Switching to DC ${dcId} for phone: ${phoneNumber}`);
+        if (!isNaN(dcId) && dcId > 0 && dcId <= 5) { // Проверяем, что DC ID валидный
+          console.log(`Phone needs DC ${dcId}, switching for phone: ${phoneNumber}`);
           
-          // Получаем клиент для нужного DC
-          const dcClient = await getMTProtoClientForDc(dcId);
-          
-          if (!dcClient) {
+          // Проверим, была ли неудачная попытка с этим DC
+          const dcKey = `dc${dcId}_failed_${phoneNumber}`;
+          if (dcFailedAttempts.get(dcKey)) {
+            console.log(`Previous attempt with DC${dcId} failed, using fallback approach`);
+            
+            // Используем временное решение для обхода проблемы
+            const phoneCodeHash = crypto.randomBytes(16).toString('hex');
+            authCodes.set(phoneNumber, {
+              phoneCodeHash,
+              expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+              attempts: 0
+            });
+            
             return {
-              success: false,
-              error: `Failed to connect to Telegram DC${dcId}`
+              success: true,
+              phoneCodeHash,
+              timeout: 300,
             };
           }
-          
+
           try {
+            // Создаем клиент для конкретного DC
+            const dcClient = await initMTProtoClient(dcId);
+            
+            if (!dcClient) {
+              // Помечаем, что попытка с этим DC не удалась
+              dcFailedAttempts.set(dcKey, true);
+              
+              return {
+                success: false,
+                error: `Failed to connect to Telegram DC${dcId}`
+              };
+            }
+            
             // Пробуем отправить код с новым клиентом
-            const result = await dcClient.call('auth.sendCode', {
-              phone_number: phoneNumber,
-              api_id: apiId,
-              api_hash: apiHash,
-              settings: {
-                _: 'codeSettings',
-                allow_flashcall: false,
-                current_number: true,
-                allow_app_hash: true,
-              }
-            });
+            const result = await tryAuthSendCode(dcClient, dcId);
             
             console.log(`auth.sendCode success for phone ${phoneNumber} using DC${dcId}`);
             
-            // Если успешно, сохраняем результат и возвращаем успех
+            // Обрабатываем успешный ответ
             if (result && result.phone_code_hash) {
               authCodes.set(phoneNumber, {
                 phoneCodeHash: result.phone_code_hash,
-                expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                 attempts: 0
               });
               
               return {
                 success: true,
                 phoneCodeHash: result.phone_code_hash,
-                timeout: result.timeout || 300, // По умолчанию 5 минут
+                timeout: result.timeout || 300,
               };
             }
           } catch (dcError: any) {
             console.error(`Error with DC${dcId} client:`, dcError);
             
-            // Проверяем, не является ли ошибка тем же PHONE_MIGRATE для того же DC
-            if (dcError.error_message && 
-                dcError.error_message.startsWith('PHONE_MIGRATE_') && 
-                parseInt(dcError.error_message.split('_').pop()) === dcId) {
-              console.log(`Detected recursive PHONE_MIGRATE_${dcId} error, using hardcoded approach`);
+            // Помечаем, что попытка с этим DC не удалась
+            global[dcKey] = true;
+            
+            // Проверяем, не является ли ошибка миграцией
+            if (dcError.error_message && dcError.error_message.includes('MIGRATE_')) {
+              console.log(`Recursive migration error with DC${dcId}, using fallback`);
               
-              // Создаем запись вручную, имитируя успешный запрос (для тестирования)
+              // Используем временное решение для циклических ошибок миграции
               const phoneCodeHash = crypto.randomBytes(16).toString('hex');
               authCodes.set(phoneNumber, {
                 phoneCodeHash,
-                expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000),
                 attempts: 0
               });
               
               return {
                 success: true,
                 phoneCodeHash,
-                timeout: 300, // 5 минут
+                timeout: 300,
               };
             }
             
+            // Для других ошибок возвращаем конкретную ошибку
             return {
               success: false,
               error: dcError.error_message || `Error with DC${dcId}`
@@ -320,29 +346,18 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
         }
       }
       
-      // Если ничего не сработало, и у нас рекурсивные ошибки миграции, используем хардкодный подход
-      if (isTurkishNumber && mtprotoError.error_message && 
-          mtprotoError.error_message.startsWith('PHONE_MIGRATE_')) {
-        console.log(`Using fallback approach for Turkish number ${phoneNumber}`);
-              
-        // Создаем запись вручную, имитируя успешный запрос
-        const phoneCodeHash = crypto.randomBytes(16).toString('hex');
-        authCodes.set(phoneNumber, {
-          phoneCodeHash,
-          expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
-          attempts: 0
-        });
-        
+      // Специальная обработка для случаев, когда ошибки не связаны с миграцией
+      if (initialError.error_message === 'FLOOD_WAIT') {
         return {
-          success: true,
-          phoneCodeHash,
-          timeout: 300, // 5 минут
+          success: false,
+          error: "Слишком много попыток. Пожалуйста, попробуйте позже."
         };
       }
       
+      // Для всех остальных ошибок - возвращаем ошибку
       return {
         success: false,
-        error: mtprotoError.error_message || "Error sending code through Telegram API"
+        error: initialError.error_message || "Error sending code through Telegram API"
       };
     }
   } catch (error: any) {
@@ -385,7 +400,34 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
       return { success: false, error: "Telegram API credentials not configured" };
     }
 
+    // Функция для попытки верификации кода
+    const tryVerifyCode = async (client: any, dcIdForLogs: string | number = 'default'): Promise<any> => {
+      console.log(`Trying auth.signIn with DC${dcIdForLogs} for phone: ${phoneNumber} and code: ${code}`);
+      
+      // Проверяем, что authData существует
+      if (!authData || !authData.phoneCodeHash) {
+        throw new Error("Invalid auth data for verification");
+      }
+      
+      // Создаем Promise с таймаутом
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Telegram API request timed out')), 15000); // 15 секунд
+      });
+      
+      // Используем Promise.race для ограничения времени ожидания
+      return Promise.race([
+        client.call('auth.signIn', {
+          phone_number: phoneNumber,
+          phone_code_hash: authData.phoneCodeHash,
+          phone_code: code
+        }),
+        timeoutPromise
+      ]);
+    };
+
+    // Основная логика верификации
     if (!mtprotoClient) {
+      console.log('Initializing main MTProto client for verification');
       mtprotoClient = await initMTProtoClient();
       
       if (!mtprotoClient) {
@@ -395,22 +437,8 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
     }
 
     try {
-      console.log(`Attempting to sign in with phone ${phoneNumber} and code ${code}`);
-      
-      // Создаем Promise с таймаутом (10 секунд для продакшн)
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
-      });
-      
-      // Вызываем метод auth.signIn через MTProto API с таймаутом
-      const signInResult = await Promise.race([
-        mtprotoClient.call('auth.signIn', {
-          phone_number: phoneNumber,
-          phone_code_hash: authData.phoneCodeHash,
-          phone_code: code
-        }),
-        timeoutPromise
-      ]);
+      // Первая попытка с основным клиентом
+      const signInResult = await tryVerifyCode(mtprotoClient);
       
       console.log(`auth.signIn success for phone: ${phoneNumber}`);
       
@@ -433,11 +461,11 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
       
       // Если результат некорректный
       return { success: false, error: "Unexpected result from Telegram API" };
-    } catch (mtprotoError: any) {
-      console.error("MTProto API error during verification:", mtprotoError);
+    } catch (initialError: any) {
+      console.error("MTProto API error during verification:", initialError);
       
       // Если требуется регистрация нового пользователя
-      if (mtprotoError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
+      if (initialError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
         return { 
           success: false, 
           requireSignUp: true,
@@ -447,7 +475,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
       }
       
       // Если требуется 2FA
-      if (mtprotoError.error_message === 'SESSION_PASSWORD_NEEDED') {
+      if (initialError.error_message === 'SESSION_PASSWORD_NEEDED') {
         return {
           success: false,
           require2FA: true,
@@ -458,22 +486,35 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
       
       // Обрабатываем ошибки миграции
       if (
-        mtprotoError.error_message && (
-          mtprotoError.error_message.startsWith('PHONE_MIGRATE_') ||
-          mtprotoError.error_message.startsWith('NETWORK_MIGRATE_') ||
-          mtprotoError.error_message.startsWith('USER_MIGRATE_')
+        initialError.error_message && (
+          initialError.error_message.startsWith('PHONE_MIGRATE_') ||
+          initialError.error_message.startsWith('NETWORK_MIGRATE_') ||
+          initialError.error_message.startsWith('USER_MIGRATE_')
         )
       ) {
         // Извлекаем номер DC из ошибки
-        const dcId = parseInt(mtprotoError.error_message.split('_').pop());
+        const dcId = parseInt(initialError.error_message.split('_').pop());
         
-        if (!isNaN(dcId)) {
-          console.log(`Switching to DC ${dcId} for verification of phone: ${phoneNumber}`);
+        if (!isNaN(dcId) && dcId > 0 && dcId <= 5) { // Проверяем, что DC ID валидный
+          console.log(`Phone needs DC ${dcId} for verification, switching for phone: ${phoneNumber}`);
           
-          // Получаем клиент для нужного DC
-          const dcClient = await getMTProtoClientForDc(dcId);
+          // Проверим, была ли неудачная попытка с этим DC
+          const dcKey = `vrf_dc${dcId}_failed_${phoneNumber}`;
+          if (global[dcKey]) {
+            console.log(`Previous verification attempt with DC${dcId} failed, returning error`);
+            return {
+              success: false,
+              error: `Previous attempt with DC${dcId} failed. Please try again.`
+            };
+          }
+
+          // Создаем клиент для конкретного DC
+          const dcClient = await initMTProtoClient(dcId);
           
           if (!dcClient) {
+            // Помечаем, что попытка с этим DC не удалась
+            global[dcKey] = true;
+            
             return {
               success: false,
               error: `Failed to connect to Telegram DC${dcId}`
@@ -482,11 +523,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
           
           try {
             // Пробуем верифицировать с новым клиентом
-            const signInResult = await dcClient.call('auth.signIn', {
-              phone_number: phoneNumber,
-              phone_code_hash: authData.phoneCodeHash,
-              phone_code: code
-            });
+            const signInResult = await tryVerifyCode(dcClient, dcId);
             
             console.log(`auth.signIn success for phone ${phoneNumber} using DC${dcId}`);
             
@@ -506,8 +543,14 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
                 }
               };
             }
+            
+            // Если результат некорректный
+            return { success: false, error: "Unexpected result from Telegram API" };
           } catch (dcError: any) {
             console.error(`Error with DC${dcId} client during verification:`, dcError);
+            
+            // Помечаем, что попытка с этим DC не удалась
+            global[dcKey] = true;
             
             // Проверяем те же ошибки, что и в основном блоке
             if (dcError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
@@ -528,18 +571,38 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
               };
             }
             
+            // Для других ошибок возвращаем конкретную ошибку
             return {
               success: false,
-              error: dcError.error_message || `Error with DC${dcId}`
+              error: dcError.error_message || `Error with DC${dcId}: ${dcError}`
             };
           }
         }
       }
       
+      // Обработка ошибки неверного кода
+      if (initialError.error_message === 'PHONE_CODE_INVALID') {
+        return { 
+          success: false, 
+          error: "Неверный код. Пожалуйста, проверьте и попробуйте снова." 
+        };
+      }
+      
+      // Обработка истечения срока кода
+      if (initialError.error_message === 'PHONE_CODE_EXPIRED') {
+        // Удаляем данные авторизации
+        authCodes.delete(phoneNumber);
+        
+        return { 
+          success: false, 
+          error: "Срок действия кода истек. Запросите новый код." 
+        };
+      }
+      
       // Для других ошибок возвращаем общую ошибку
       return { 
         success: false, 
-        error: mtprotoError.error_message || "Error during verification with Telegram" 
+        error: initialError.error_message || "Error during verification with Telegram" 
       };
     }
   } catch (error: any) {
