@@ -1069,13 +1069,11 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
         console.error("Error getting messages by entity:", entityError);
       }
       
-      // Третий способ - через API метод getMessages напрямую для конкретного chatId
-      console.log("Trying API method with specific message IDs...");
+      // Используем напрямую метод GetHistory, поскольку другие методы не работают стабильно
+      console.log("Trying to get messages using messages.GetHistory API...");
       
       try {
-        // Здесь мы не используем MTProto API, а обращаемся напрямую к API методам telegram-js
-        
-        // Формируем правильный InputPeer для MTProto API
+        // Формируем правильный InputPeer для API запроса
         let inputPeer = null;
         
         if (peer._ === 'inputPeerUser') {
@@ -1106,47 +1104,27 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
         
         console.log("Calling messages.getHistory with peer:", inputPeer);
         
-        // Используем низкоуровневый API для получения истории сообщений
-        // Так как у нас нет прямого доступа к MTProto API, попробуем получить сообщения напрямую через TelegramClient
-        
-        // Получаем ID последних сообщений (предполагаем, что они последовательные)
-        const messageIds = Array.from({ length: limit }, (_, i) => i + 1);
-        console.log(`Trying to get specific message IDs: ${messageIds.join(', ')}`);
-        
-        // Вызываем API метод напрямую через TelegramClient
+        // Используем метод GetHistory напрямую, пропуская все другие методы, которые не работают
         let result;
+        
+        // Вызываем getHistory напрямую через TelegramClient.invoke
         try {
-          // Первый способ - через GetMessages
-          result = await currentClient.invoke(new Api.messages.GetMessages({
-            id: messageIds
+          result = await currentClient.invoke(new Api.messages.GetHistory({
+            peer: inputPeer,
+            offsetId: 0,
+            offsetDate: 0,
+            addOffset: 0,
+            limit: limit,
+            maxId: 0,
+            minId: 0,
+            hash: BigInt(0)
           }));
           
-          console.log("messages.GetMessages response:", result);
-        } catch (apiError) {
-          console.error("Error invoking messages.GetMessages:", apiError);
-          
-          // Попробуем альтернативный подход - получение сообщений через getHistory
-          console.log("Trying to get messages through raw invoke with getHistory...");
-          
-          // Используем метод invoke напрямую
-          try {
-            // Вызываем getHistory напрямую через TelegramClient.invoke
-            result = await currentClient.invoke(new Api.messages.GetHistory({
-              peer: inputPeer,
-              offsetId: 0,
-              offsetDate: 0,
-              addOffset: 0,
-              limit: limit,
-              maxId: 0,
-              minId: 0,
-              hash: BigInt(0)
-            }));
-            
-            console.log("GetHistory response:", result);
-          } catch (historyError) {
-            console.error("Error with getHistory request:", historyError);
-            throw historyError;
-          }
+          console.log("GetHistory response received, messages count:", 
+            result.messages ? result.messages.length : 'unknown');
+        } catch (historyError) {
+          console.error("Error with getHistory request:", historyError);
+          throw historyError;
         }
         
         

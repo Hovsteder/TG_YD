@@ -1459,14 +1459,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: 'Чат не найден' });
       }
       
+      // Получаем сообщения чата из базы данных
+      let messages = await storage.listChatMessages(chat.id);
+      
       // Всегда обновляем сообщения при forceUpdate=true, а также при первой загрузке или по запросу update=true
       // Это гарантирует, что мы всегда получаем свежие сообщения при явном запросе
       const shouldUpdate = forceUpdate === true || update === true || messages.length < 1;
       
       console.log(`Запрос сообщений для чата ${chatId}, shouldUpdate=${shouldUpdate}, forceUpdate=${forceUpdate}, update=${update}`);
-      
-      // Получаем сообщения чата из базы данных
-      let messages = await storage.listChatMessages(chat.id);
       let needsUpdate = false;
       
       // Обновляем сообщения, если требуется
