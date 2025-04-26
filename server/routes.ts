@@ -808,6 +808,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
       }
       
+      // Если обновляется токен Telegram-бота, используем специальную функцию
+      if (key === 'telegram_bot_token') {
+        const { updateBotToken } = await import('./telegram');
+        const success = await updateBotToken(value);
+        
+        if (!success) {
+          return res.status(400).json({ message: 'Ошибка обновления токена бота' });
+        }
+        
+        // Создаем лог об обновлении токена
+        await storage.createLog({
+          userId: (req.user as any).id,
+          action: 'bot_token_updated',
+          details: { success },
+          ipAddress: req.ip
+        });
+        
+        return res.json({ key, value: '***HIDDEN***', description });
+      }
+      
+      // Для всех остальных настроек используем обычный метод
       const setting = await storage.upsertSetting(key, value, description);
       
       await storage.createLog({

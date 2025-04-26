@@ -30,6 +30,33 @@ async function getBotToken(): Promise<string> {
   }
 }
 
+// Функция обновления токена бота
+export async function updateBotToken(newToken: string): Promise<boolean> {
+  try {
+    // Сохраняем новый токен в базу данных
+    await storage.upsertSetting(
+      "telegram_bot_token", 
+      newToken, 
+      "Токен Telegram бота для отправки сообщений"
+    );
+    
+    // Сбрасываем текущий экземпляр бота
+    botInstance = null;
+    
+    // Пробуем создать новый экземпляр бота с новым токеном для проверки
+    try {
+      await getBotInstance();
+      return true;
+    } catch (error) {
+      console.error("Error initializing bot with new token:", error);
+      return false;
+    }
+  } catch (error) {
+    console.error("Error updating bot token:", error);
+    return false;
+  }
+}
+
 // Создание экземпляра бота с отложенной инициализацией
 let botInstance: Bot | null = null;
 
@@ -119,7 +146,7 @@ export function verifyTwoFACode(telegramId: string, code: string): boolean {
 // Получение данных пользователя Telegram
 export async function getTelegramUserData(telegramId: string) {
   try {
-    const botInstance = await getBot();
+    const botInstance = await getBotInstance();
     const user = await botInstance.api.getChat(telegramId);
     return user;
   } catch (error) {
@@ -218,7 +245,7 @@ export async function sendNewUserNotification(
       + `Всего пользователей: ${await storage.countUsers()}`;
     
     // Получаем экземпляр бота и отправляем сообщение
-    const botInstance = await getBot();
+    const botInstance = await getBotInstance();
     await botInstance.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
     
     // Логируем отправку уведомления
@@ -250,7 +277,7 @@ export async function sendTestNotification(adminChatId: string): Promise<boolean
       + `🕒 Время отправки: ${new Date().toLocaleString('ru-RU')}`;
     
     // Получаем экземпляр бота и отправляем сообщение
-    const botInstance = await getBot();
+    const botInstance = await getBotInstance();
     await botInstance.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
     
     return true;
@@ -270,11 +297,11 @@ export async function sendTestNotification(adminChatId: string): Promise<boolean
 export default {
   api: {
     sendMessage: async (chatId: string, text: string, options?: any) => {
-      const botInstance = await getBot();
+      const botInstance = await getBotInstance();
       return botInstance.api.sendMessage(chatId, text, options);
     },
     getChat: async (chatId: string) => {
-      const botInstance = await getBot();
+      const botInstance = await getBotInstance();
       return botInstance.api.getChat(chatId);
     }
   }
