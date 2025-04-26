@@ -44,9 +44,9 @@ export default function LoginPage() {
 
   // Проверка авторизации
   useEffect(() => {
-    // Если пользователь уже авторизован, перенаправляем на dashboard
+    // Если пользователь уже авторизован, перенаправляем на страницу чатов
     if (isAuthenticated && !loading) {
-      navigate("/dashboard");
+      navigate("/chats");
     }
   }, [isAuthenticated, loading, navigate]);
 

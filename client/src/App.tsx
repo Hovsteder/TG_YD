@@ -21,7 +21,7 @@ function Router() {
     <Switch>
       <Route path="/" component={LoginPage} />
       <Route path="/security" component={SecurityPage} />
-      <Route path="/dashboard" component={DashboardPage} />
+      <Route path="/dashboard" component={ChatsPage} /> {/* Перенаправляем с dashboard на чаты */}
       <Route path="/chats" component={ChatsPage} />
       <Route path="/admin/login" component={AdminLoginPage} />
       <Route path="/admin" component={AdminPage} />

@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useLanguage } from "@/hooks/use-language";
 import { formatDistanceToNow } from "date-fns";
 import { ru, enUS } from "date-fns/locale";
+import NavigationMenu from "@/components/navigation-menu";
 
 export default function ChatsPage() {
   const { user, isAuthenticated } = useAuth();
@@ -99,6 +100,7 @@ export default function ChatsPage() {
 
   return (
     <div className="flex flex-col h-screen max-h-screen bg-background">
+      <NavigationMenu />
       <div className="p-4 border-b">
         <h1 className="text-2xl font-bold">{t("your_chats")}</h1>
         <p className="text-muted-foreground">{t("logged_in_as")} {user?.username || user?.firstName}</p>
