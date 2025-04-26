@@ -36,6 +36,7 @@ export interface IStorage {
   // Чаты
   createChat(chat: InsertChat): Promise<Chat>;
   getChatByIds(userId: number, chatId: string): Promise<Chat | undefined>;
+  getChatById(id: number): Promise<Chat | undefined>;
   updateChat(id: number, data: Partial<InsertChat>): Promise<Chat | undefined>;
   listUserChats(userId: number, limit?: number): Promise<Chat[]>;
   listAllChats(limit?: number, offset?: number): Promise<Chat[]>;
@@ -246,6 +247,15 @@ export class DatabaseStorage implements IStorage {
         eq(chats.userId, userId),
         eq(chats.chatId, chatId)
       ));
+    
+    return chat;
+  }
+  
+  async getChatById(id: number): Promise<Chat | undefined> {
+    const [chat] = await db
+      .select()
+      .from(chats)
+      .where(eq(chats.id, id));
     
     return chat;
   }

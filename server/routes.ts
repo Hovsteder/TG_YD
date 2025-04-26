@@ -1774,6 +1774,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
+  // 5.1. Получение чатов пользователя (для администратора)
+  app.get('/api/admin/users/:id/chats', isAdmin, async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      // Получаем чаты пользователя
+      const chats = await storage.listUserChats(userId);
+      
+      res.json(chats);
+    } catch (error) {
+      console.error('Admin user chats fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения чатов пользователя' });
+    }
+  });
+  
+  // 5.2. Получение сообщений чата пользователя (для администратора)
+  app.get('/api/admin/users/:userId/chats/:chatId/messages', isAdmin, async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      const chatId = parseInt(req.params.chatId);
+      
+      // Проверяем существование пользователя
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      // Проверяем, что чат принадлежит пользователю
+      const chat = await storage.getChatById(chatId);
+      if (!chat || chat.userId !== userId) {
+        return res.status(404).json({ message: 'Чат не найден или не принадлежит данному пользователю' });
+      }
+      
+      // Получаем сообщения чата
+      const messages = await storage.listChatMessages(chatId);
+      
+      res.json(messages);
+    } catch (error) {
+      console.error('Admin user chat messages fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения сообщений чата пользователя' });
+    }
+  });
+  
   // 6. Получение списка всех сессий
   app.get('/api/admin/sessions', isAdmin, async (req, res) => {
     try {
