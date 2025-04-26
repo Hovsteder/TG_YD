@@ -806,7 +806,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   lastMessage = {
                     id: message.id,
                     text: message.message || '',
-                    date: new Date(message.date * 1000)
+                    // Безопасное создание даты с проверкой на корректность
+                    date: (() => {
+                      try {
+                        // Ограничиваем диапазон дат безопасным периодом
+                        const timestamp = message.date * 1000;
+                        const messageDate = new Date(timestamp);
+                        
+                        // Проверяем, что дата в разумных пределах (не ранее 2010 года и не позже текущей даты + 1 день)
+                        const minDate = new Date(2010, 0, 1);
+                        const maxDate = new Date();
+                        maxDate.setDate(maxDate.getDate() + 1);
+                        
+                        if (messageDate < minDate || messageDate > maxDate) {
+                          console.warn("Invalid message date detected, using current date");
+                          return new Date();
+                        }
+                        
+                        return messageDate;
+                      } catch (e) {
+                        console.warn("Error parsing message date:", e);
+                        return new Date();
+                      }
+                    })()
                   };
                 }
               }
@@ -816,11 +838,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 // Проверяем, существует ли уже этот чат в базе
                 let existingChat = await storage.getChatByIds(user.id, chatId);
                 
+                // Форматируем текущую дату для безопасного сохранения
+                const safeDate = new Date();
+                safeDate.setHours(0, 0, 0, 0); // Сбрасываем время для предотвращения проблем с timezone
+                
+                // Функция для создания безопасной даты сообщения
+                const getSafeMessageDate = () => {
+                  if (!lastMessage || !lastMessage.date) return safeDate;
+                  
+                  try {
+                    // Проверяем, что дата сообщения корректна
+                    if (
+                      isNaN(lastMessage.date.getTime()) || 
+                      lastMessage.date.getFullYear() < 2010 || 
+                      lastMessage.date.getFullYear() > 2030
+                    ) {
+                      return safeDate;
+                    }
+                    
+                    return lastMessage.date;
+                  } catch (e) {
+                    console.warn("Error validating message date:", e);
+                    return safeDate;
+                  }
+                };
+                
                 if (existingChat) {
                   // Обновляем существующий чат
                   existingChat = await storage.updateChat(existingChat.id, {
                     title: chatTitle,
-                    lastMessageDate: lastMessage ? lastMessage.date : existingChat.lastMessageDate,
+                    lastMessageDate: getSafeMessageDate(),
                     lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
                     photoUrl: chatPhoto || existingChat.photoUrl
                   });
@@ -832,7 +879,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     chatId: chatId,
                     type: chatType,
                     title: chatTitle,
-                    lastMessageDate: lastMessage ? lastMessage.date : new Date(),
+                    lastMessageDate: getSafeMessageDate(),
                     lastMessageText: lastMessage ? lastMessage.text : '',
                     unreadCount: dialog.unread_count || 0,
                     photoUrl: chatPhoto

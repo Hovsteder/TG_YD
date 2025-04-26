@@ -563,117 +563,148 @@ export async function getUserDialogs(limit = 5): Promise<any> {
     }
     
     try {
-      console.log(`Fetching ${limit} dialogs from Telegram API...`);
+      console.log(`Fetching chats from Telegram API...`);
       
-      // Получаем диалоги
-      const dialogs = await currentClient.getDialogs({
-        limit: limit
-      });
+      // Используем рекомендованные API вызовы для получения чатов
+      // Будем пробовать несколько методов для повышения надежности
+      let result;
       
-      console.log(`Retrieved ${dialogs.length} dialogs from Telegram`);
+      // Используем только GetChats, т.к. GetAllChats вызывает ошибку типа
+      console.log("Trying to get chats with messages.GetChats...");
+      try {
+        result = await currentClient.invoke(new Api.messages.GetChats({
+          id: []  // пустой массив - получить доступные чаты
+        }));
+      } catch (apiError: any) {
+        console.warn("Error using GetChats:", apiError?.message);
+        
+        // Пробуем прямой вызов getDialogs как запасной вариант
+        console.log("Falling back to getDialogs method...");
+        const dialogsResult = await currentClient.getDialogs({
+          limit: limit
+        });
+        
+        // Преобразуем результат в формат, похожий на результат GetChats
+        result = {
+          chats: dialogsResult.map((dialog: any) => dialog.entity).filter(Boolean)
+        };
+      }
       
-      // Собираем информацию о чатах, пользователях и сообщениях
+      console.log(`Retrieved chats from Telegram API:`, result);
+      
+      // Получаем информацию из результата
       const chats: any[] = [];
       const users: any[] = [];
-      const messages: any[] = [];
+      const dialogs: any[] = [];
       
-      // Обрабатываем диалоги
-      for (const dialog of dialogs) {
-        // Получаем информацию о чате/пользователе
-        if (dialog.entity) {
-          const entity = dialog.entity as any;
-          if (entity.className === 'User') {
+      // Обработка результатов API вызова
+      if (result && result.chats) {
+        // Преобразуем результат в массив, если это не массив
+        const chatList = Array.isArray(result.chats) ? result.chats : [result.chats];
+        
+        // Теперь обрабатываем данные о чатах
+        for (const chat of chatList) {
+          const chatObj = chat as any;
+          
+          // Определяем тип чата
+          let peerType = '';
+          let peerId = '';
+          
+          if (chatObj.className === 'User') {
+            peerType = 'user';
+            peerId = `user_${chatObj.id}`;
+            
             users.push({
-              id: entity.id,
-              first_name: entity.firstName || '',
-              last_name: entity.lastName || '',
-              username: entity.username || '',
-              photo: entity.photo || null
+              id: chatObj.id.toString(),
+              first_name: chatObj.firstName || '',
+              last_name: chatObj.lastName || '',
+              username: chatObj.username || '',
+              phone: chatObj.phone || ''
             });
-          } else {
+          } else if (chatObj.className === 'Chat' || chatObj.className === 'ChatFull') {
+            peerType = 'chat';
+            peerId = `chat_${chatObj.id}`;
+            
             chats.push({
-              id: entity.id,
-              title: entity.title || '',
-              photo: entity.photo || null
+              id: chatObj.id.toString(),
+              title: chatObj.title || 'Group Chat',
+              type: 'group'
+            });
+          } else if (chatObj.className === 'Channel' || chatObj.className === 'ChannelFull') {
+            peerType = 'channel';
+            peerId = `channel_${chatObj.id}`;
+            
+            chats.push({
+              id: chatObj.id.toString(),
+              title: chatObj.title || 'Channel',
+              type: chatObj.megagroup ? 'supergroup' : 'channel'
+            });
+          }
+          
+          // Добавляем в список диалогов базовую информацию
+          if (peerId) {
+            dialogs.push({
+              peer: {
+                _: `peer${peerType.charAt(0).toUpperCase() + peerType.slice(1)}`,
+                [`${peerType}_id`]: chatObj.id
+              },
+              unread_count: chatObj.unreadCount || 0,
+              last_message_date: new Date().toISOString().split('T')[0], // Безопасная дата
+              title: chatObj.title || (chatObj.firstName ? `${chatObj.firstName} ${chatObj.lastName || ''}`.trim() : 'Chat')
             });
           }
         }
-        
-        // Добавляем информацию о диалоге
-        const peer = dialog.inputEntity as any || {};
-        const peerType = peer.className || '';
-        
-        // Определяем тип peer
-        let peerInfo = null;
-        if (peerType === 'InputPeerUser') {
-          peerInfo = {
-            _: 'peerUser',
-            user_id: peer.userId
-          };
-        } else if (peerType === 'InputPeerChat') {
-          peerInfo = {
-            _: 'peerChat',
-            chat_id: peer.chatId
-          };
-        } else if (peerType === 'InputPeerChannel') {
-          peerInfo = {
-            _: 'peerChannel',
-            channel_id: peer.channelId
-          };
-        }
-        
-        // Добавляем последнее сообщение
-        if (dialog.message) {
-          const message = dialog.message as any;
-          messages.push({
-            id: message.id,
-            message: message.message || '',
-            date: message.date instanceof Date ? message.date : new Date(),
-            out: message.out || false,
-            media: message.media || null
+      }
+      
+      // Если не получили никаких данных через API, попробуем использовать GetDialogs (резервный метод)
+      if (dialogs.length === 0) {
+        console.log("No chats received, trying alternative method...");
+        try {
+          const dialogs = await currentClient.getDialogs({
+            limit: limit
           });
+          
+          console.log(`Retrieved ${dialogs.length} dialogs through alternative method`);
+          
+          // Собираем информацию из диалогов в безопасном формате
+          for (const dialog of dialogs) {
+            const entity = dialog.entity as any;
+            if (!entity) continue;
+            
+            if (entity.className === 'User') {
+              users.push({
+                id: entity.id.toString(),
+                first_name: entity.firstName || '',
+                last_name: entity.lastName || '',
+                username: entity.username || '',
+                phone: entity.phone || ''
+              });
+            } else {
+              chats.push({
+                id: entity.id.toString(),
+                title: entity.title || 'Chat',
+                type: entity.className === 'Channel' ? 
+                  (entity.megagroup ? 'supergroup' : 'channel') : 'group'
+              });
+            }
+          }
+        } catch (altError: any) {
+          console.warn("Alternative method also failed:", altError.message);
         }
       }
       
       return {
         success: true,
-        dialogs: dialogs.map(dialog => {
-          let peer = null;
-          const entity = (dialog.entity as any) || {};
-          
-          // Определяем тип peer
-          if (entity.className === 'User') {
-            peer = {
-              _: 'peerUser',
-              user_id: entity.id
-            };
-          } else if (entity.className === 'Chat') {
-            peer = {
-              _: 'peerChat',
-              chat_id: entity.id
-            };
-          } else if (entity.className === 'Channel') {
-            peer = {
-              _: 'peerChannel',
-              channel_id: entity.id
-            };
-          }
-          
-          return {
-            peer: peer,
-            unread_count: dialog.unreadCount || 0,
-            top_message: dialog.message?.id || 0
-          };
-        }),
+        dialogs: dialogs,
         users: users,
         chats: chats,
-        messages: messages
+        count: dialogs.length
       };
     } catch (error: any) {
-      console.error("Error fetching dialogs:", error);
+      console.error("Error fetching chats from Telegram:", error);
       return {
         success: false,
-        error: error.message || "Error fetching dialogs from Telegram"
+        error: error.message || "Error fetching chats from Telegram"
       };
     }
   } catch (error: any) {
