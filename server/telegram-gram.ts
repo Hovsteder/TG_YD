@@ -426,6 +426,17 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
         // Очищаем данные авторизации
         authCodes.delete(phoneNumber);
         
+        // Сохраняем сессию в базу данных после успешной аутентификации
+        const newSessionStr = currentClient.session.save();
+        if (typeof newSessionStr === 'string') {
+          stringSession = newSessionStr;
+          console.log("Successfully saved authentication session after phone code verification");
+          
+          // Сохраняем в БД
+          await saveSessionToDB(newSessionStr);
+          console.log("Telegram session has been saved to database after successful phone login");
+        }
+        
         const user = signInResult.user;
         if (user instanceof Api.User) {
           return {
@@ -1097,6 +1108,10 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
         if (typeof newSessionStr === 'string') {
           stringSession = newSessionStr;
           console.log("Successfully saved authentication session after QR login");
+          
+          // Явно сохраняем сессию в базу данных после успешной авторизации
+          await saveSessionToDB(newSessionStr);
+          console.log("Telegram session has been saved to database after successful QR login");
         }
         
         // Пробуем получить дополнительную информацию о пользователе
