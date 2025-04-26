@@ -749,7 +749,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const dialogsResult = await getUserDialogs(5);
           
           if (dialogsResult.success) {
-            console.log(`Retrieved ${dialogsResult.dialogs.length} dialogs from Telegram API`);
+            console.log(`Retrieved ${dialogsResult.dialogs?.length || 0} dialogs from Telegram API`);
+            
+            // Проверяем, есть ли данные
+            if (!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) {
+              console.log("No dialogs received from API, checking if users are available");
+              
+              // Если dialogs отсутствуют, но есть пользователи, создаем диалоги на основе пользователей
+              if (dialogsResult.users && dialogsResult.users.length > 0) {
+                console.log(`Found ${dialogsResult.users.length} users, creating dialogs from them`);
+                dialogsResult.dialogs = dialogsResult.users.map((user: any) => ({
+                  peer: {
+                    _: 'peerUser',
+                    user_id: user.id
+                  },
+                  title: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+                  unread_count: 0
+                }));
+              }
+            }
             
             // Обрабатываем данные диалогов и сохраняем в базу
             const savedChats = [];

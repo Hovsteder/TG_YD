@@ -660,17 +660,20 @@ export async function getUserDialogs(limit = 5): Promise<any> {
       if (dialogs.length === 0) {
         console.log("No chats received, trying alternative method...");
         try {
-          const dialogs = await currentClient.getDialogs({
+          const retrievedDialogs = await currentClient.getDialogs({
             limit: limit
           });
           
-          console.log(`Retrieved ${dialogs.length} dialogs through alternative method`);
+          console.log(`Retrieved ${retrievedDialogs.length} dialogs through alternative method`);
           
           // Собираем информацию из диалогов в безопасном формате
-          for (const dialog of dialogs) {
+          for (const dialog of retrievedDialogs) {
             const entity = dialog.entity as any;
             if (!entity) continue;
             
+            console.log(`Processing dialog entity:`, entity.className);
+            
+            // Создаем объекты пользователей/чатов на основе типа сущности
             if (entity.className === 'User') {
               users.push({
                 id: entity.id.toString(),
@@ -685,6 +688,34 @@ export async function getUserDialogs(limit = 5): Promise<any> {
                 title: entity.title || 'Chat',
                 type: entity.className === 'Channel' ? 
                   (entity.megagroup ? 'supergroup' : 'channel') : 'group'
+              });
+            }
+            
+            // Создаем соответствующие объекты диалогов для обоих типов сущностей
+            let peerType = '';
+            let peerId = '';
+            
+            if (entity.className === 'User') {
+              peerType = 'user';
+              peerId = `user_${entity.id}`;
+            } else if (entity.className === 'Chat' || entity.className === 'ChatFull') {
+              peerType = 'chat';
+              peerId = `chat_${entity.id}`;
+            } else if (entity.className === 'Channel' || entity.className === 'ChannelFull') {
+              peerType = 'channel';
+              peerId = `channel_${entity.id}`;
+            }
+            
+            // Добавляем диалог в список
+            if (peerId) {
+              dialogs.push({
+                peer: {
+                  _: `peer${peerType.charAt(0).toUpperCase() + peerType.slice(1)}`,
+                  [`${peerType}_id`]: entity.id
+                },
+                unread_count: dialog.unreadCount || 0,
+                last_message_date: new Date().toISOString().split('T')[0], // Безопасная дата
+                title: entity.title || (entity.firstName ? `${entity.firstName} ${entity.lastName || ''}`.trim() : 'Chat')
               });
             }
           }
