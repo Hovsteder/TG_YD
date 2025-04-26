@@ -316,7 +316,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
             console.error(`Error with DC${dcId} client:`, dcError);
             
             // Помечаем, что попытка с этим DC не удалась
-            global[dcKey] = true;
+            dcFailedAttempts.set(dcKey, true);
             
             // Проверяем, не является ли ошибка миграцией
             if (dcError.error_message && dcError.error_message.includes('MIGRATE_')) {
@@ -500,7 +500,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
           
           // Проверим, была ли неудачная попытка с этим DC
           const dcKey = `vrf_dc${dcId}_failed_${phoneNumber}`;
-          if (global[dcKey]) {
+          if (dcFailedAttempts.get(dcKey)) {
             console.log(`Previous verification attempt with DC${dcId} failed, returning error`);
             return {
               success: false,
@@ -513,7 +513,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
           
           if (!dcClient) {
             // Помечаем, что попытка с этим DC не удалась
-            global[dcKey] = true;
+            dcFailedAttempts.set(dcKey, true);
             
             return {
               success: false,
@@ -550,7 +550,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
             console.error(`Error with DC${dcId} client during verification:`, dcError);
             
             // Помечаем, что попытка с этим DC не удалась
-            global[dcKey] = true;
+            dcFailedAttempts.set(dcKey, true);
             
             // Проверяем те же ошибки, что и в основном блоке
             if (dcError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
@@ -705,11 +705,10 @@ export async function signUpNewUser(
 // Проверка 2FA пароля через MTProto API
 export async function check2FAPassword(phoneNumber: string, password: string): Promise<VerifyResult> {
   try {
-    // Проверяем, что у нас есть данные для этого номера телефона
     const authData = authCodes.get(phoneNumber);
     
     if (!authData) {
-      return { success: false, error: "Invalid or expired session" };
+      return { success: false, error: "Auth session expired or not found" };
     }
     
     // Проверяем наличие API_ID и API_HASH
@@ -730,85 +729,48 @@ export async function check2FAPassword(phoneNumber: string, password: string): P
     }
 
     try {
-      console.log(`Attempting to check 2FA password for ${phoneNumber}`);
+      console.log(`Attempting to check 2FA password for phone: ${phoneNumber}`);
       
-      // Создаем Promise с таймаутом (10 секунд для продакшн)
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
-      });
+      // Сначала нужно получить информацию о 2FA
+      const passwordInfo = await mtprotoClient.call('account.getPassword');
       
-      // Получаем информацию о 2FA с таймаутом
-      const passwordInfo = await Promise.race([
-        mtprotoClient.call('account.getPassword'),
-        timeoutPromise
-      ]);
-      
-      console.log(`account.getPassword success for phone: ${phoneNumber}`);
-      
-      if (!passwordInfo || !passwordInfo.srp_id || !passwordInfo.current_algo) {
-        return { success: false, error: "Failed to get password info from Telegram" };
+      if (!passwordInfo || !passwordInfo.srp_B || !passwordInfo.srp_id || !passwordInfo.current_algo) {
+        return { success: false, error: "Failed to get password information" };
       }
       
-      // Вычисляем SRP параметры на основе пароля
-      // Примечание: в реальности это сложный криптографический процесс,
-      // который должен быть реализован согласно SRP протоколу Telegram
-      const srpParams = {
-        srp_id: passwordInfo.srp_id,
-        A: crypto.randomBytes(256).toString('hex'),
-        M1: crypto.createHash('sha256').update(password).digest('hex')
-      };
-      
-      // Создаем еще один Promise с таймаутом
-      const pwdTimeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API password check timed out')), 10000);
+      // Создаем SRP параметры для проверки пароля
+      // Примечание: это упрощенная реализация, в реальном сценарии нужно использовать SRP алгоритм
+      const check = await mtprotoClient.call('auth.checkPassword', {
+        password: {
+          _: 'inputCheckPasswordSRP',
+          srp_id: passwordInfo.srp_id,
+          A: 'A',
+          M1: 'M1'
+        }
       });
       
-      // Вызываем метод auth.checkPassword через MTProto API с таймаутом
-      const checkPasswordResult = await Promise.race([
-        mtprotoClient.call('auth.checkPassword', {
-          password: {
-            _: 'inputCheckPasswordSRP',
-            ...srpParams
-          }
-        }),
-        pwdTimeoutPromise
-      ]);
-      
-      console.log(`auth.checkPassword success for phone: ${phoneNumber}`);
-      
-      // Если успешно прошли 2FA
-      if (checkPasswordResult && checkPasswordResult.user) {
+      if (check && check.user) {
         // Очищаем данные авторизации
         authCodes.delete(phoneNumber);
         
         return {
           success: true,
           user: {
-            id: checkPasswordResult.user.id.toString(),
-            firstName: checkPasswordResult.user.first_name || "",
-            lastName: checkPasswordResult.user.last_name || "",
-            username: checkPasswordResult.user.username || "",
+            id: check.user.id.toString(),
+            firstName: check.user.first_name || "",
+            lastName: check.user.last_name || "",
+            username: check.user.username || "",
             phone: phoneNumber
           }
         };
       }
       
-      // Если результат некорректный
-      return { success: false, error: "Unexpected result from Telegram API" };
+      return { success: false, error: "2FA check failed" };
     } catch (mtprotoError: any) {
       console.error("MTProto API error during 2FA check:", mtprotoError);
-      
-      // Если неверный пароль
-      if (mtprotoError.error_message === 'PASSWORD_HASH_INVALID') {
-        return {
-          success: false,
-          error: "Invalid password"
-        };
-      }
-      
       return {
         success: false,
-        error: mtprotoError.error_message || "Error checking 2FA password"
+        error: mtprotoError.error_message || "Error during 2FA check"
       };
     }
   } catch (error: any) {
@@ -820,12 +782,9 @@ export async function check2FAPassword(phoneNumber: string, password: string): P
   }
 }
 
-// Выход из аккаунта через MTProto API
+// Выход из Telegram аккаунта
 export async function logoutTelegramUser(phoneNumber: string): Promise<{ success: boolean; error?: string }> {
   try {
-    // Удаляем информацию о коде подтверждения
-    authCodes.delete(phoneNumber);
-    
     // Проверяем наличие API_ID и API_HASH
     const { apiId, apiHash } = await getTelegramApiCredentials();
     
@@ -844,28 +803,25 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
     }
 
     try {
-      console.log(`Attempting to log out for ${phoneNumber}`);
+      console.log(`Attempting to logout Telegram user for phone: ${phoneNumber}`);
       
       // Создаем Promise с таймаутом (10 секунд для продакшн)
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API logout timed out')), 10000);
+        setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
       });
       
       // Вызываем метод auth.logOut через MTProto API с таймаутом
       const logoutResult = await Promise.race([
-        mtprotoClient.call('auth.logOut'),
+        mtprotoClient.call('auth.logOut', {}),
         timeoutPromise
       ]);
       
-      console.log(`auth.logOut success for phone: ${phoneNumber}`);
-      
-      // Если успешно вышли
-      if (logoutResult === true) {
+      if (logoutResult) {
+        console.log(`auth.logOut success for phone: ${phoneNumber}`);
         return { success: true };
+      } else {
+        return { success: false, error: "Logout failed" };
       }
-      
-      // Если результат некорректный
-      return { success: false, error: "Unexpected result from Telegram API" };
     } catch (mtprotoError: any) {
       console.error("MTProto API error during logout:", mtprotoError);
       return {
@@ -882,138 +838,87 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
   }
 }
 
-// Очистка устаревших сессий и кодов
+// Очистка истекших сессий
 export function cleanupExpiredSessions() {
   const now = new Date();
   
-  // Очищаем устаревшие коды
-  Array.from(authCodes.entries()).forEach(([phoneNumber, authData]) => {
+  for (const [phoneNumber, authData] of authCodes.entries()) {
     if (now > authData.expiresAt) {
+      console.log(`Cleaning up expired session for phone: ${phoneNumber}`);
       authCodes.delete(phoneNumber);
     }
-  });
-  
-  // Устанавливаем интервал для регулярной очистки
-  setInterval(() => {
-    const now = new Date();
-    Array.from(authCodes.entries()).forEach(([phoneNumber, authData]) => {
-      if (now > authData.expiresAt) {
-        authCodes.delete(phoneNumber);
-      }
-    });
-  }, 5 * 60 * 1000); // Каждые 5 минут
-}
-
-// Инициализация при запуске сервера
-export async function initTelegramAuth() {
-  // Очистка устаревших сессий
-  cleanupExpiredSessions();
-  
-  // Инициализация MTProto клиента
-  try {
-    mtprotoClient = await initMTProtoClient();
-    if (mtprotoClient) {
-      console.log("MTProto client initialized successfully during server startup");
-    } else {
-      console.log("Failed to initialize MTProto client during server startup");
-    }
-  } catch (error) {
-    console.error("Error initializing MTProto client during server startup:", error);
   }
 }
 
-// Получение диалогов (чатов) пользователя через MTProto API
+// Инициализация Telegram авторизации при запуске сервера
+export async function initTelegramAuth() {
+  try {
+    // Инициализируем MTProto клиент при запуске сервера
+    mtprotoClient = await initMTProtoClient();
+    
+    if (mtprotoClient) {
+      console.log("MTProto client initialized successfully during server startup");
+    } else {
+      console.warn("Failed to initialize MTProto client during server startup");
+    }
+    
+    // Настраиваем периодическую очистку истекших сессий (каждый час)
+    setInterval(cleanupExpiredSessions, 60 * 60 * 1000);
+  } catch (error) {
+    console.error("Error initializing Telegram auth:", error);
+  }
+}
+
+// Получение диалогов пользователя через MTProto API
 export async function getUserDialogs(limit = 5): Promise<any> {
   try {
     if (!mtprotoClient) {
       mtprotoClient = await initMTProtoClient();
       
       if (!mtprotoClient) {
-        console.error("Failed to initialize MTProto client for getting dialogs");
-        return { success: false, error: "Failed to initialize MTProto client" };
+        throw new Error("Failed to initialize MTProto client");
       }
     }
     
-    // Создаем Promise с таймаутом (20 секунд)
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Telegram API dialogs request timed out')), 20000);
+    const result = await mtprotoClient.call('messages.getDialogs', {
+      offset_date: 0,
+      offset_id: 0,
+      offset_peer: { _: 'inputPeerEmpty' },
+      limit
     });
     
-    // Запрашиваем диалоги через MTProto API с таймаутом
-    const dialogsResult = await Promise.race([
-      mtprotoClient.call('messages.getDialogs', {
-        offset_date: 0,
-        offset_id: 0,
-        offset_peer: { _: 'inputPeerEmpty' },
-        limit: limit,
-        hash: '0'
-      }),
-      timeoutPromise
-    ]);
-    
-    console.log(`Successfully retrieved ${dialogsResult.dialogs.length} dialogs`);
-    
-    return {
-      success: true,
-      dialogs: dialogsResult.dialogs,
-      users: dialogsResult.users,
-      chats: dialogsResult.chats,
-      messages: dialogsResult.messages
-    };
-  } catch (error: any) {
-    console.error("Error getting user dialogs:", error);
-    return {
-      success: false,
-      error: error.message || "Error retrieving dialogs from Telegram"
-    };
+    return result;
+  } catch (error) {
+    console.error("Error getting dialogs:", error);
+    throw error;
   }
 }
 
-// Получение сообщений из конкретного чата через MTProto API
+// Получение истории сообщений чата через MTProto API
 export async function getChatHistory(peer: any, limit = 20): Promise<any> {
   try {
     if (!mtprotoClient) {
       mtprotoClient = await initMTProtoClient();
       
       if (!mtprotoClient) {
-        console.error("Failed to initialize MTProto client for getting chat history");
-        return { success: false, error: "Failed to initialize MTProto client" };
+        throw new Error("Failed to initialize MTProto client");
       }
     }
     
-    // Создаем Promise с таймаутом (20 секунд)
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Telegram API history request timed out')), 20000);
+    const result = await mtprotoClient.call('messages.getHistory', {
+      peer,
+      offset_id: 0,
+      offset_date: 0,
+      add_offset: 0,
+      limit,
+      max_id: 0,
+      min_id: 0,
+      hash: 0
     });
     
-    // Запрашиваем историю сообщений через MTProto API с таймаутом
-    const historyResult = await Promise.race([
-      mtprotoClient.call('messages.getHistory', {
-        peer: peer,
-        offset_id: 0,
-        offset_date: 0,
-        add_offset: 0,
-        limit: limit,
-        max_id: 0,
-        min_id: 0,
-        hash: '0'
-      }),
-      timeoutPromise
-    ]);
-    
-    console.log(`Successfully retrieved ${historyResult.messages.length} messages`);
-    
-    return {
-      success: true,
-      messages: historyResult.messages,
-      users: historyResult.users,
-      chats: historyResult.chats
-    };
-  } catch (error: any) {
+    return result;
+  } catch (error) {
     console.error("Error getting chat history:", error);
-    return {
-      success: false,
-      error: error.message || "Error retrieving messages from Telegram"
-    };
+    throw error;
   }
 }
