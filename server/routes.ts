@@ -379,12 +379,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ipAddress: req.ip
       });
       
-      res.json({
+      const responseMsg = {
         success: true,
         message: 'Код подтверждения отправлен через Telegram',
         phoneCodeHash: result.phoneCodeHash,
-        expiresIn: result.timeout || 600 // по умолчанию 10 минут
-      });
+        expiresIn: result.timeout || 600, // по умолчанию 10 минут
+        codeDeliveryType: 'app' // По умолчанию через приложение
+      };
+      
+      // Добавляем информацию о способе доставки кода, если она доступна
+      if (result.codeType) {
+        responseMsg.codeDeliveryType = result.codeType;
+      }
+      
+      res.json(responseMsg);
     } catch (error) {
       console.error('Phone code request error:', error);
       res.status(500).json({ 

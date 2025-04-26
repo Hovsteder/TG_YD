@@ -39,6 +39,7 @@ interface AuthResult {
   phoneCodeHash?: string;
   timeout?: number;
   error?: string;
+  codeType?: string; // Тип доставки кода (app, sms, call)
 }
 
 interface VerifyResult {
@@ -143,17 +144,27 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
     const currentClient = await getClient();
     
     try {
-      // Отправляем код через Telegram API в формате GramJS
+      console.log(`Sending auth code to ${phoneNumber} with apiId: ${apiId}`);
+      
+      // Отправляем код через Telegram API в формате GramJS с расширенными настройками
+      const settings = new Api.CodeSettings({
+        allowFlashcall: true,        // Разрешаем верификацию через звонок
+        currentNumber: true,         // Используем текущий номер
+        allowAppHash: true,          // Разрешаем использование app hash
+        allowMissedCall: true,       // Разрешаем пропущенные звонки
+        logoutTokens: [],            // Токены выхода (пустой массив)
+        // Добавляем дополнительные флаги
+        allowFirebase: true,         // Разрешаем использование firebase (если поддерживается)
+      });
+      
+      console.log("Using code settings:", JSON.stringify(settings, null, 2));
+      
+      // Отправляем код через Telegram API
       const result = await currentClient.invoke(new Api.auth.SendCode({
         phoneNumber: phoneNumber,
         apiId: apiId,
         apiHash: apiHash,
-        settings: new Api.CodeSettings({
-          allowFlashcall: true,
-          currentNumber: true,
-          allowAppHash: true,
-          allowMissedCall: true
-        })
+        settings: settings
       }));
       
       console.log(`sendCode result:`, result);
@@ -169,6 +180,47 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
           throw new Error("No phoneCodeHash in response");
         }
         
+        // Выводим информацию о типе доставки кода
+        let codeType = 'unknown';
+        
+        if (anyResult.type) {
+          console.log(`Code delivery type: ${anyResult.type.className}`);
+          
+          // Определяем тип доставки для ответа API
+          if (anyResult.type.className === 'auth.SentCodeTypeApp') {
+            codeType = 'app';
+          } else if (anyResult.type.className === 'auth.SentCodeTypeSms') {
+            codeType = 'sms';
+          } else if (anyResult.type.className === 'auth.SentCodeTypeCall') {
+            codeType = 'call';
+          }
+          
+          // Если тип кода - через приложение, пытаемся также запросить код через SMS
+          if (anyResult.type.className === 'auth.SentCodeTypeApp') {
+            try {
+              console.log("Attempting to resend code via SMS...");
+              
+              // Пробуем повторно запросить код, но через SMS
+              setTimeout(async () => {
+                try {
+                  // Не блокируем основной поток выполнения
+                  const resendResult = await currentClient.invoke(new Api.auth.ResendCode({
+                    phoneNumber: phoneNumber,
+                    phoneCodeHash: phoneCodeHash
+                  }));
+                  
+                  console.log("Resend code via SMS result:", resendResult);
+                } catch (resendError) {
+                  console.error("Error resending code via SMS:", resendError);
+                }
+              }, 1000); // Задержка в 1 секунду
+            } catch (smsError) {
+              console.error("Error requesting SMS code:", smsError);
+              // Не выбрасываем ошибку, чтобы не прерывать основной поток
+            }
+          }
+        }
+        
         // Сохраняем результат в памяти
         authCodes.set(phoneNumber, {
           phoneCodeHash,
@@ -176,13 +228,14 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
           attempts: 0
         });
         
-        // Таймаут по умолчанию 5 минут (300 секунд)
-        const timeout = 300;
+        // Получаем timeout из результата или устанавливаем по умолчанию 5 минут (300 секунд)
+        const timeout = anyResult.timeout || 300;
         
         return {
           success: true,
           phoneCodeHash,
           timeout,
+          codeType
         };
       } else {
         throw new Error("No phoneCodeHash received from Telegram API");
@@ -209,6 +262,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
           success: true,
           phoneCodeHash,
           timeout: 300,
+          codeType: 'fallback'
         };
       }
       
@@ -251,14 +305,17 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
     const currentClient = await getClient();
     
     try {
-      // Проверяем код
+      // Подробно логируем процесс
+      console.log(`Verifying auth code for phone ${phoneNumber} with code ${code} and hash ${authData.phoneCodeHash}`);
+      
+      // Пробуем подтвердить код
       const signInResult = await currentClient.invoke(new Api.auth.SignIn({
         phoneNumber: phoneNumber,
         phoneCodeHash: authData.phoneCodeHash,
         phoneCode: code
       }));
       
-      console.log("signIn result:", signInResult);
+      console.log("signIn result:", JSON.stringify(signInResult, null, 2));
       
       if (signInResult instanceof Api.auth.Authorization) {
         // Очищаем данные авторизации
