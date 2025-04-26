@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/auth-context";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Chat, Message } from "../../../shared/schema";
 import { Separator } from "@/components/ui/separator";
@@ -46,8 +46,7 @@ export default function ChatsPage() {
     queryKey: ["/api/chats", selectedChat?.id, "messages"],
     queryFn: async () => {
       if (!selectedChat) return [];
-      // Добавляем параметр update=true для обновления сообщений при каждом запросе
-      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages?update=true`);
+      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages`);
       return res.json() as Promise<Message[]>;
     },
     enabled: !!selectedChat,
@@ -56,36 +55,8 @@ export default function ChatsPage() {
   // Обработчик выбора чата
   const handleSelectChat = (chat: Chat) => {
     setSelectedChat(chat);
-    // При выборе чата запускаем обновление сообщений
-    setTimeout(() => {
-      refetchMessages();
-    }, 100); // Небольшая задержка, чтобы query hook успел обновиться с новым selectedChat
   };
 
-  // Принудительное обновление сообщений с передачей параметра forceUpdate
-  const handleRefreshMessages = async () => {
-    try {
-      if (!selectedChat) return;
-      
-      // Передаем параметр forceUpdate=true
-      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages?update=true&forceUpdate=true`);
-      const refreshedMessages = await res.json();
-      
-      // Обновляем кэш запроса вручную
-      queryClient.setQueryData(["/api/chats", selectedChat.id, "messages"], refreshedMessages);
-      
-      // Также можно вызвать refetch для обновления интерфейса
-      refetchMessages();
-    } catch (error) {
-      console.error("Error refreshing messages:", error);
-      toast({
-        title: t("error_refreshing_messages"),
-        description: t("error_refreshing_messages_description"),
-        variant: "destructive",
-      });
-    }
-  };
-  
   // Обработчик отправки сообщения (заглушка)
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,15 +71,14 @@ export default function ChatsPage() {
   };
 
   // Форматирование даты с учетом языка
-  const formatDate = (date: Date | null) => {
-    if (!date) return '';
+  const formatDate = (date: Date) => {
     return formatDistanceToNow(new Date(date), { 
       addSuffix: true, 
       locale: language === 'ru' ? ru : enUS 
     });
   };
 
-  // Обработка ошибок и автоматическое обновление при загрузке страницы
+  // Обработка ошибок
   useEffect(() => {
     if (chatsError) {
       toast({
@@ -118,13 +88,6 @@ export default function ChatsPage() {
       });
     }
   }, [chatsError, toast, t]);
-  
-  // Обновляем список чатов при монтировании компонента
-  useEffect(() => {
-    if (isAuthenticated) {
-      refetchChats();
-    }
-  }, [isAuthenticated, refetchChats]);
 
   if (!isAuthenticated) {
     return (
@@ -208,43 +171,23 @@ export default function ChatsPage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           {selectedChat ? (
             <>
-              <div className="p-3 border-b flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <Avatar>
-                    <AvatarImage src={selectedChat.photoUrl || ""} />
-                    <AvatarFallback>
-                      {(selectedChat.title || "CH").substring(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <h2 className="font-medium">{selectedChat.title || t("unknown")}</h2>
-                    <p className="text-xs text-muted-foreground">
-                      {selectedChat.type === "private"
-                        ? t("private_chat")
-                        : selectedChat.type === "group"
-                        ? t("group")
-                        : t("channel")}
-                    </p>
-                  </div>
+              <div className="p-3 border-b flex items-center space-x-3">
+                <Avatar>
+                  <AvatarImage src={selectedChat.photoUrl || ""} />
+                  <AvatarFallback>
+                    {(selectedChat.title || "CH").substring(0, 2).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <h2 className="font-medium">{selectedChat.title || t("unknown")}</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedChat.type === "private"
+                      ? t("private_chat")
+                      : selectedChat.type === "group"
+                      ? t("group")
+                      : t("channel")}
+                  </p>
                 </div>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  onClick={handleRefreshMessages}
-                  title={t("refresh_messages")}
-                  disabled={isLoadingMessages}
-                >
-                  {isLoadingMessages ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 2v6h-6"></path>
-                      <path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path>
-                      <path d="M3 22v-6h6"></path>
-                      <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
-                    </svg>
-                  )}
-                </Button>
               </div>
 
               <ScrollArea className="flex-1 p-4">

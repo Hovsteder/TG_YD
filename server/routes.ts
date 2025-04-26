@@ -1448,9 +1448,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = req.user as any;
       const { chatId } = req.params;
       const limit = parseInt(req.query.limit as string) || 20;
-      // Параметры для управления обновлением сообщений
-      const update = req.query.update === 'true'; 
-      const forceUpdate = req.query.forceUpdate === 'true'; // Добавляем параметр для принудительного обновления
       
       // Получаем чат из базы
       const chat = await storage.getChatByIds(user.id, chatId);
@@ -1461,20 +1458,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Получаем сообщения чата из базы данных
       let messages = await storage.listChatMessages(chat.id);
-      
-      // Всегда обновляем сообщения при forceUpdate=true, а также при первой загрузке или по запросу update=true
-      // Это гарантирует, что мы всегда получаем свежие сообщения при явном запросе
-      const shouldUpdate = forceUpdate === true || update === true || messages.length < 1;
-      
-      console.log(`Запрос сообщений для чата ${chatId}, shouldUpdate=${shouldUpdate}, forceUpdate=${forceUpdate}, update=${update}`);
       let needsUpdate = false;
       
-      // Обновляем сообщения, если требуется
-      if (shouldUpdate) {
-        console.log(`Обновляем сообщения для чата ${chatId}, shouldUpdate=${shouldUpdate}, forceUpdate=${forceUpdate}`);
+      // Если сообщений нет или запрошено больше чем есть в базе, 
+      // получаем сообщения через MTProto API
+      if (messages.length < limit) {
         try {
-          // Используем исправленную реализацию получения истории чата
-          const { getChatHistory } = await import('./telegram-gram-fixed');
+          // Получаем историю чата через MTProto API
+          const { getChatHistory } = await import('./telegram-gram');
           
           // Формируем правильный peer объект на основе структуры chatId
           let peer = null;
@@ -1546,7 +1537,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       senderName: senderName,
                       text: msg.message,
                       sentAt: messageDate,
-                      timestamp: messageDate, // Используем реальное время сообщения из Telegram
+                      timestamp: new Date(), // Добавляем timestamp как текущее время
                       isOutgoing: msg.out || false,
                       mediaType: msg.media ? msg.media._ : null,
                       mediaUrl: null // Пока не загружаем медиа
