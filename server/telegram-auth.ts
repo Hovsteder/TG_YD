@@ -198,9 +198,13 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
           api_hash: apiHash,
           settings: {
             _: 'codeSettings',
-            allow_flashcall: false,
-            current_number: true,
-            allow_app_hash: true,
+            allow_flashcall: true,       // Разрешаем Flash-звонки
+            current_number: true,        // Указываем, что это текущий номер телефона
+            allow_app_hash: true,        // Разрешаем App Hash
+            allow_missed_call: true,     // Разрешаем пропущенные звонки
+            allow_firebase: true,        // Разрешаем использование Firebase
+            unknown_number: false,       // Указываем, что номер не неизвестный
+            logout_tokens: [],           // Пустой массив токенов для выхода
           }
         }),
         timeoutPromise

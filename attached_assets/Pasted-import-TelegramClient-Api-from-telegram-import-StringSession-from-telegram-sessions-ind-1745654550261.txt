@@ -1,0 +1,947 @@
+import { TelegramClient, Api } from "telegram";
+import { StringSession } from "telegram/sessions/index.js";
+import { storage } from "./storage"; // To get api_id/api_hash
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
+
+// --- Configuration ---
+let apiId: number | undefined;
+let apiHash: string | undefined;
+let client: TelegramClient | undefined;
+let stringSession = ""; // Store session string in memory for now
+
+// --- Initialization Function ---
+async function getClient(): Promise<TelegramClient> {
+  if (client && client.connected) {
+    return client;
+  }
+
+  console.log("[MTProto DEBUG] Client not initialized or disconnected. Initializing...");
+
+  const apiIdStr = await storage.getSettingValue("telegram_api_id");
+  const apiHashStr = await storage.getSettingValue("telegram_api_hash");
+
+  if (!apiIdStr || !apiHashStr) {
+    console.error("[MTProto ERROR] API ID or API Hash not configured.");
+    throw new Error("API ID and API Hash must be configured in admin settings.");
+  }
+
+  apiId = parseInt(apiIdStr, 10);
+  apiHash = apiHashStr;
+
+  console.log(`[MTProto DEBUG] Using API ID: ${apiId}`);
+  console.log(`[MTProto DEBUG] API Hash is set (length: ${apiHash.length})`);
+
+  const session = new StringSession(stringSession);
+  console.log(`[MTProto DEBUG] Initializing with session (length: ${stringSession.length})`);
+
+  client = new TelegramClient(session, apiId, apiHash, {
+    connectionRetries: 5,
+    // Setup logging in gramjs if needed
+    // baseLogger: new Logger("trace"), 
+  });
+
+  try {
+    console.log("[MTProto DEBUG] Connecting client (without login flow)..." );
+    // Use .connect() directly to avoid the interactive login prompts within initializeClient
+    await client.connect();
+    console.log("[MTProto DEBUG] Client connected successfully.");
+    // Безопасно обновляем stringSession
+    const updatedSessionStr = client.session.save();
+    if (typeof updatedSessionStr === 'string') {
+      stringSession = updatedSessionStr;
+      console.log(`[MTProto DEBUG] Session string updated after connect (length: ${stringSession.length})`);
+    } else {
+      console.log(`[MTProto DEBUG] Session string did not change after connect.`);
+    }
+
+  } catch (error) {
+    console.error("[MTProto ERROR] Failed to connect client:", error);
+    client = undefined; // Reset client on connection failure
+    throw error;
+  }
+
+  return client;
+}
+
+// --- Get Authenticated Client for a specific user ---
+async function getAuthenticatedClient(userId: number): Promise<TelegramClient> {
+  console.log(`[MTProto getAuthenticatedClient] Getting client for user ID: ${userId}`);
+  
+  // 1. Get user session string from DB
+  const user = await storage.getUser(userId);
+  if (!user) {
+    console.error(`[MTProto getAuthenticatedClient] User not found: ${userId}`);
+    throw new Error("USER_NOT_FOUND");
+  }
+  const userSessionString = user.mtprotoSession;
+  if (!userSessionString) {
+    console.error(`[MTProto getAuthenticatedClient] No MTProto session found in DB for user ${userId}`);
+    throw new Error("MTPROTO_SESSION_NOT_FOUND");
+  }
+  console.log(`[MTProto getAuthenticatedClient] Found session string (length: ${userSessionString.length}) for user ${userId}`);
+
+  // 2. Get API ID/Hash (could be cached)
+  const apiIdStr = await storage.getSettingValue("telegram_api_id");
+  const apiHashStr = await storage.getSettingValue("telegram_api_hash");
+  if (!apiIdStr || !apiHashStr) {
+    console.error("[MTProto ERROR] API ID or API Hash not configured.");
+    throw new Error("API ID and API Hash must be configured.");
+  }
+  const apiId = parseInt(apiIdStr, 10);
+  const apiHash = apiHashStr;
+
+  // 3. Create and connect client with the user's session
+  const session = new StringSession(userSessionString);
+  const userClient = new TelegramClient(session, apiId, apiHash, {
+    connectionRetries: 3, // Fewer retries for specific user sessions?
+  });
+
+  try {
+    console.log(`[MTProto getAuthenticatedClient] Connecting client for user ${userId}...`);
+    await userClient.connect();
+    console.log(`[MTProto getAuthenticatedClient] Client connected successfully for user ${userId}.`);
+
+    // Verify authorization
+    if (!await userClient.isUserAuthorized()) {
+        console.warn(`[MTProto getAuthenticatedClient] Client for user ${userId} connected but NOT authorized. Session might be invalid.`);
+        // Optionally, clear the session from DB?
+        // await storage.updateUserMtprotoSession(userId, null);
+        throw new Error("MTPROTO_SESSION_INVALID");
+    }
+    console.log(`[MTProto getAuthenticatedClient] Client authorized for user ${userId}.`);
+    
+    // Optional: Update session string in DB if it changed after connect (rare)
+    const currentSession = userClient.session.save();
+    if (typeof currentSession === 'string' && currentSession !== userSessionString) {
+      console.log(`[MTProto getAuthenticatedClient] Session string changed after connect for user ${userId}. Updating DB.`);
+      await storage.updateUserMtprotoSession(userId, currentSession);
+    }
+
+    return userClient;
+
+  } catch (error) {
+    console.error(`[MTProto getAuthenticatedClient] Failed to connect client for user ${userId}:`, error);
+    // Do not reset the global client here
+    throw error;
+  }
+  // Note: We are creating a new client instance for each request needing auth.
+  // Consider pooling or caching clients if performance becomes an issue.
+}
+
+// --- Service Functions ---
+
+export async function sendCode(phoneNumber: string): Promise<{ phoneCodeHash: string }> {
+  try {
+    const currentClient = await getClient();
+    console.log(`[MTProto DEBUG] Attempting to send code to ${phoneNumber}`);
+
+    const result = await currentClient.invoke(
+      new Api.auth.SendCode({
+        phoneNumber: phoneNumber,
+        apiId: apiId!,       // Should be set by getClient
+        apiHash: apiHash!,     // Should be set by getClient
+        settings: new Api.CodeSettings({}), // Use default settings for now
+      })
+    );
+
+    console.log("[MTProto DEBUG] sendCode result:", result); // Be careful logging this, might contain sensitive info
+    // Безопасно обновляем stringSession
+    const sessionAfterSendCode = currentClient.session.save();
+    if (typeof sessionAfterSendCode === 'string') {
+        stringSession = sessionAfterSendCode; // Обновляем глобальную переменную (если она все еще нужна)
+        console.log(`[MTProto DEBUG] Session string updated after sendCode (length: ${stringSession.length})`);
+    } else {
+         console.log(`[MTProto DEBUG] Session string did not change after sendCode.`);
+    }
+
+    if (!(result instanceof Api.auth.SentCode) || !result.phoneCodeHash) {
+      console.error("[MTProto ERROR] sendCode response structure invalid or missing phoneCodeHash", result);
+      throw new Error("Failed to send code or received invalid response.");
+    }
+
+    return { phoneCodeHash: result.phoneCodeHash };
+
+  } catch (error) {
+    console.error(`[MTProto ERROR] Failed to send code to ${phoneNumber}:`, error);
+    // Disconnect only if it's a specific connection-related error?
+    // Avoid disconnecting for user-related errors like invalid phone number.
+    if (client && client.connected) {
+       // Consider disconnecting more selectively
+       // await client.disconnect(); 
+       // console.log("[MTProto DEBUG] Disconnected client due to error in sendCode.");
+    }
+    // client = undefined; // Reset client instance?
+    throw error; // Re-throw the error
+  }
+}
+
+export async function signInWithCode(
+  phoneNumber: string,
+  phoneCodeHash: string,
+  code: string
+): Promise<{ auth: Api.auth.Authorization; session: string }> {
+  try {
+    const currentClient = await getClient(); // Ensure client is connected
+    console.log(`[MTProto DEBUG] Attempting to sign in ${phoneNumber} with code`);
+
+    const result = await currentClient.invoke(
+      new Api.auth.SignIn({
+        phoneNumber: phoneNumber,
+        phoneCodeHash: phoneCodeHash,
+        phoneCode: code,
+      })
+    );
+
+    console.log("[MTProto DEBUG] signIn result type:", result.className);
+
+    if (result instanceof Api.auth.AuthorizationSignUpRequired) {
+        console.log("[MTProto INFO] Sign up required for", phoneNumber);
+        // Handle sign up requirement - potentially return a specific object/error
+        throw new Error("SIGNUP_REQUIRED"); // Or return { signUpRequired: true, terms: result.termsOfService }
+    }
+
+    if (!(result instanceof Api.auth.Authorization)) {
+       console.error("[MTProto ERROR] signIn response structure invalid:", result);
+       throw new Error("Sign in failed or received invalid response.");
+    }
+
+    // Successful sign-in
+    console.log("[MTProto INFO] Sign in successful for", phoneNumber);
+    const sessionStringAfterSignIn = currentClient.session.save(); // Используем новое имя переменной
+    if (typeof sessionStringAfterSignIn === 'string') {
+      stringSession = sessionStringAfterSignIn; // Обновляем глобальную переменную (если нужна)
+      // Добавляем проверку типа перед доступом к length
+      if (typeof sessionStringAfterSignIn === 'string') { 
+        console.log(`[MTProto DEBUG] Session string updated after signIn (length: ${sessionStringAfterSignIn.length})`);
+      }
+      // Возвращаем результат авторизации и строку сессии
+      return { auth: result, session: sessionStringAfterSignIn };
+    } else {
+      console.error("[MTProto ERROR] Failed to save session after signIn.");
+      throw new Error("Session saving failed after sign in.");
+    }
+
+  } catch (error: any) {
+      console.error(`[MTProto ERROR] Failed to sign in ${phoneNumber}:`, error);
+      // Handle specific errors like SESSION_PASSWORD_NEEDED, PHONE_CODE_INVALID, etc.
+      if (error.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+          console.log("[MTProto INFO] 2FA password needed for", phoneNumber);
+          throw new Error("2FA_REQUIRED");
+      }
+      if (error.errorMessage === 'PHONE_CODE_INVALID') {
+          console.error("[MTProto ERROR] Invalid phone code entered.");
+          throw new Error("INVALID_CODE");
+      }
+       if (error.errorMessage === 'PHONE_NUMBER_INVALID') {
+          console.error("[MTProto ERROR] Invalid phone number format.");
+          throw new Error("INVALID_PHONE_NUMBER");
+      }
+      // Consider disconnecting or resetting client based on error type
+      throw error; // Re-throw other errors
+  }
+}
+
+// --- Function to get current user info ---
+export async function getUserInfo(userId: number): Promise<Api.User> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getUserInfo] Attempting to get user info for user ID: ${userId}`);
+    
+    const me = await currentClient.getMe() as Api.User;
+    
+    if (!me) {
+        console.error("[MTProto ERROR] getMe() returned undefined or null.");
+        throw new Error("Failed to get user information.");
+    }
+    
+    console.log(`[MTProto DEBUG] Got user info for ID: ${me.id}`);
+    return me;
+
+  } catch (error) {
+    console.error(`[MTProto ERROR] Failed to get user info:`, error);
+    throw error; // Re-throw the error
+  }
+}
+
+// --- Function to get user dialogs (chats) ---
+export async function getUserDialogs(userId: number, limit: number = 20): Promise<Api.Dialog[]> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getUserDialogs] Attempting to get dialogs (limit: ${limit}) for user ID: ${userId}`);
+    
+    const dialogsResult = await currentClient.getDialogs({ limit });
+    console.log(`[MTProto DEBUG getUserDialogs] client.getDialogs() returned object with length: ${dialogsResult?.length ?? 'undefined'}`);
+    
+    // Return the raw result for routes.ts to handle list extraction
+    return dialogsResult as unknown as Api.Dialog[]; // Cast needed due to potential TotalList type mismatch
+    
+  } catch (error) {
+     console.error(`[MTProto ERROR] Failed to get dialogs:`, error);
+     throw error; // Re-throw the error
+  }
+}
+
+// --- Function to get messages from a specific chat/peer ---
+export async function getChatMessages(
+  userId: number, 
+  peer: Api.TypePeer | string | Api.long, // Can be peer object, username, phone, or ID
+  limit: number = 20,
+  offsetId?: number, // Start getting messages from this ID (exclusive)
+  addOffset?: number // Additional offset
+): Promise<Api.messages.Messages> { // Returns the raw Messages type which includes messages, chats, users
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getChatMessages] Attempting to get messages for peer: ${JSON.stringify(peer)}, user ID: ${userId}, limit: ${limit}, offsetId: ${offsetId}, addOffset: ${addOffset}`);
+
+    const history = await currentClient.getMessages(peer, {
+      limit,
+      offsetId,
+      addOffset,
+    });
+
+    console.log(`[MTProto DEBUG getChatMessages] Got ${history.length} messages for peer: ${JSON.stringify(peer)}`);
+    
+    // getMessages can return different types (MessagesSlice, Messages, etc.)
+    // We expect something that holds an array of messages. 
+    // The Api.messages.Messages type is a common wrapper.
+    if ('messages' in history && Array.isArray(history.messages)) {
+         console.log(`[MTProto DEBUG getChatMessages] Result contains ${history.messages.length} message objects.`);
+    } else {
+        console.warn(`[MTProto DEBUG getChatMessages] Result format might be different:`, history);
+    }
+
+    // We return the whole result, as it might contain related user/chat info needed for processing
+    // Приводим к unknown, чтобы избежать ошибки приведения TotalList<Message> к Messages
+    return history as unknown as Api.messages.Messages;
+
+  } catch (error) {
+    console.error(`[MTProto ERROR] Failed to get messages for peer ${JSON.stringify(peer)}:`, error);
+    throw error; // Re-throw the error
+  }
+}
+
+// --- Function to get messages from a specific chat/peer using GetHistory API ---
+export async function getChatMessagesHistory(
+  userId: number,
+  peerId: string, // Числовой ID чата/канала/пользователя (строка)
+  peerType: 'private' | 'group' | 'supergroup' | 'channel' | string, // Тип из нашей БД
+  accessHash: bigint | null, // Добавляем accessHash
+  limit: number = 20,
+  offsetId: number = 0,
+  offsetDate: number = 0,
+  addOffset: number = 0,
+  maxId: number = 0,
+  minId: number = 0
+): Promise<any> {
+  console.log(`[MTProto DEBUG getChatMessagesHistory] Called with userId: ${userId}, peerId: ${peerId}, peerType: ${peerType}, accessHash: ${accessHash ? accessHash.toString() : 'null'}, limit: ${limit}, offsetId: ${offsetId}`); // Лог входных параметров
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+
+    // --- Преобразование ID и типа в InputPeer ---
+    let inputPeer: Api.TypeInputPeer;
+    let numericPeerId: bigint;
+    try {
+      numericPeerId = BigInt(peerId); // Преобразуем ID в BigInt
+    } catch (e) {
+       console.error(`[MTProto getChatMessagesHistory] Invalid peerId format: ${peerId}. Cannot convert to BigInt.`, e);
+       throw new Error(`Invalid peerId format: ${peerId}`);
+    }
+
+    // Пытаемся создать InputPeer напрямую, а не через getInputEntity, который не работает 
+    // с bigint и требует точного соответствия типов
+    try {
+        console.log(`[MTProto DEBUG getChatMessagesHistory] Creating InputPeer object for peerId: ${numericPeerId.toString()}, peerType: ${peerType}, accessHash: ${accessHash ? accessHash.toString() : 'null'}`);
+        
+        // Проверяем accessHash для типов, требующих его
+        if ((peerType === 'private' || peerType === 'channel' || peerType === 'supergroup') && !accessHash) {
+            console.error(`[MTProto ERROR] Missing required accessHash for InputPeer creation (Peer ID: ${numericPeerId.toString()}, Type: ${peerType})`);
+            throw new Error(`Missing required accessHash for peer type: ${peerType}`);
+        }
+        
+        // Используем самый безопасный вариант - создаем InputPeer через статические методы API
+        
+        if (peerType === 'private') {
+            // Создаем InputPeerUser используя numericPeerId вместо peerIdStr
+            // Тип BigInt автоматически преобразуется в BigInteger библиотекой
+            inputPeer = new Api.InputPeerUser({
+                userId: numericPeerId,
+                accessHash: accessHash || BigInt(0)
+            });
+        } else if (peerType === 'group') {
+            // Для чатов accessHash не требуется
+            inputPeer = new Api.InputPeerChat({
+                chatId: numericPeerId
+            });
+        } else if (peerType === 'channel' || peerType === 'supergroup') {
+            // И каналы и супергруппы - это InputPeerChannel
+            inputPeer = new Api.InputPeerChannel({
+                channelId: numericPeerId,
+                accessHash: accessHash || BigInt(0)
+            });
+        } else {
+            console.error(`[MTProto getChatMessagesHistory] Unsupported peer type: ${peerType}`);
+            throw new Error(`Unsupported peer type: ${peerType}`);
+        }
+        
+        console.log(`[MTProto DEBUG getChatMessagesHistory] Successfully created inputPeer of type: ${inputPeer.className}`);
+    } catch (entityError) {
+        console.error(`[MTProto ERROR] Failed to create InputPeer for ID ${numericPeerId.toString()}, type ${peerType}:`, entityError);
+        throw entityError;
+    }
+
+    console.log(`[MTProto DEBUG getChatMessagesHistory] Attempting to get history with InputPeer: ${inputPeer.className}, limit: ${limit}, offsetId: ${offsetId}`);
+
+    // Используем хак, оборачивая метод в try-catch, т.к. BigInt не поддерживается нормально
+    let history;
+    try {
+      history = await currentClient.invoke(
+        new Api.messages.GetHistory({
+          peer: inputPeer,
+          offsetId: offsetId,
+          offsetDate: offsetDate,
+          addOffset: addOffset,
+          limit: limit,
+          maxId: maxId,
+          minId: minId,
+          hash: BigInt(0)
+        })
+      );
+    } catch (error) {
+      console.error(`[MTProto ERROR] Error during invoke GetHistory:`, error);
+      // Пробуем альтернативный способ через интерфейс getMessages
+      console.log(`[MTProto DEBUG] Falling back to getMessages method for peer: ${peerId}`);
+      try {
+        history = await currentClient.getMessages(inputPeer, {
+          limit,
+          offsetId,
+          addOffset,
+        });
+      } catch (fallbackError) {
+        console.error(`[MTProto ERROR] Fallback getMessages also failed:`, fallbackError);
+        throw fallbackError;
+      }
+    }
+
+    console.log(`[MTProto DEBUG getChatMessagesHistory] Successfully retrieved message history for peer: ${peerId}`);
+
+    // Проверяем результат перед возвратом
+    if (history && 'messages' in history && Array.isArray(history.messages)) {
+      console.log(`[MTProto DEBUG getChatMessagesHistory] Got ${history.messages.length} messages`);
+    } else {
+      console.log(`[MTProto DEBUG getChatMessagesHistory] Unexpected result structure:`, history);
+    }
+
+    return history;
+  } catch (error) {
+    console.error(`[MTProto ERROR] Failed to get message history for peer ${peerId}:`, error);
+    throw error; // Re-throw the error to be caught in routes.ts
+  }
+}
+
+// --- Function to get all dialogs data including full entities info ---
+export async function getFullDialogsData(userId: number, limit: number = 50): Promise<any> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getFullDialogsData] Getting full dialogs data for user ID: ${userId}, limit: ${limit}`);
+    
+    // Используем low-level API для получения более подробной информации
+    const result = await currentClient.invoke(
+      new Api.messages.GetDialogs({
+        offsetDate: 0,
+        offsetId: 0,
+        offsetPeer: new Api.InputPeerEmpty(),
+        limit: limit,
+        hash: BigInt(0),
+        excludePinned: false,
+        folderId: null
+      })
+    );
+    
+    console.log(`[MTProto DEBUG getFullDialogsData] Raw result structure keys:`, Object.keys(result));
+    
+    // Создаем объект для хранения полной информации о чатах и пользователях
+    const entities: Record<string, any> = {};
+    
+    // Обрабатываем пользователей
+    if ('users' in result && Array.isArray(result.users)) {
+      console.log(`[MTProto DEBUG getFullDialogsData] Processing ${result.users.length} users`);
+      result.users.forEach((user: any) => {
+        if (user.id) {
+          const userId = user.id.toString();
+          entities[`user_${userId}`] = {
+            id: userId,
+            type: 'user',
+            accessHash: user.accessHash ? user.accessHash.toString() : null,
+            username: user.username,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            phone: user.phone
+          };
+        }
+      });
+    }
+    
+    // Обрабатываем чаты и каналы
+    if ('chats' in result && Array.isArray(result.chats)) {
+      console.log(`[MTProto DEBUG getFullDialogsData] Processing ${result.chats.length} chats`);
+      result.chats.forEach((chat: any) => {
+        if (chat.id) {
+          const chatId = chat.id.toString();
+          let entityType = 'group'; // По умолчанию обычная группа
+          
+          // Определяем тип чата
+          if (chat.className === 'Channel') {
+            entityType = chat.megagroup ? 'supergroup' : 'channel';
+          }
+          
+          entities[`${entityType}_${chatId}`] = {
+            id: chatId,
+            type: entityType,
+            accessHash: chat.accessHash ? chat.accessHash.toString() : null,
+            title: chat.title,
+            username: chat.username,
+            participantsCount: chat.participantsCount,
+            isAdmin: chat.admin_rights ? true : false,
+            isMegagroup: chat.megagroup
+          };
+        }
+      });
+    }
+    
+    // Обрабатываем диалоги
+    const processedDialogs: any[] = [];
+    if ('dialogs' in result && Array.isArray(result.dialogs)) {
+      console.log(`[MTProto DEBUG getFullDialogsData] Processing ${result.dialogs.length} dialogs`);
+      result.dialogs.forEach((dialog: any) => {
+        if (!dialog.peer) {
+          console.log(`[MTProto DEBUG getFullDialogsData] Dialog missing peer property`);
+          return;
+        }
+        
+        const peer = dialog.peer;
+        let entityType = 'unknown';
+        let entityId = '';
+        let entityKey = '';
+        
+        // Определяем тип и ключ сущности по peer
+        if (peer.className === 'PeerUser' && peer.userId) {
+          entityType = 'user';
+          entityId = peer.userId.toString();
+          entityKey = `user_${entityId}`;
+        } else if (peer.className === 'PeerChat' && peer.chatId) {
+          entityType = 'group';
+          entityId = peer.chatId.toString();
+          entityKey = `group_${entityId}`;
+        } else if (peer.className === 'PeerChannel' && peer.channelId) {
+          // Для каналов нужно определить, суперчат это или канал
+          const channelId = peer.channelId.toString();
+          
+          // Проверяем сначала сущности supergroup и channel, чтобы найти совпадение
+          if (entities[`supergroup_${channelId}`]) {
+            entityType = 'supergroup';
+            entityKey = `supergroup_${channelId}`;
+          } else if (entities[`channel_${channelId}`]) {
+            entityType = 'channel';
+            entityKey = `channel_${channelId}`;
+          } else {
+            // Если не нашли в entities, предполагаем, что это канал
+            entityType = 'channel';
+            entityKey = `channel_${channelId}`;
+          }
+          
+          entityId = channelId;
+        }
+        
+        // Находим связанную сущность в entities
+        const entity = entities[entityKey];
+        
+        // Если не нашли в entities, но у нас есть ID, ищем по этому ID в других типах
+        if (!entity && entityId) {
+          Object.keys(entities).forEach(key => {
+            if (entities[key].id === entityId) {
+              entityKey = key;
+              entityType = entities[key].type;
+              console.log(`[MTProto DEBUG getFullDialogsData] Found entity with ID ${entityId} in key ${key}`);
+            }
+          });
+        }
+        
+        // Добавляем диалог в результат
+        processedDialogs.push({
+          dialogId: dialog.id ? dialog.id.toString() : undefined,
+          entityId: entityId,
+          entityType: entityType,
+          entityKey: entityKey,
+          isPinned: dialog.pinned || false,
+          unreadCount: dialog.unreadCount || 0,
+          entity: entities[entityKey] || {
+            id: entityId,
+            type: entityType,
+            // Если не нашли сущность, но у нас есть peer с нужной информацией,
+            // создаем минимальную сущность
+            title: entityType === 'user' ? 'Unknown User' : 'Unknown Chat'
+          }
+        });
+      });
+    }
+    
+    console.log(`[MTProto DEBUG getFullDialogsData] Completed processing for user ${userId}, found ${processedDialogs.length} valid dialogs`);
+    
+    // Добавляем проверку и логирование для диалогов без сущностей или с неизвестным типом
+    const unknownTypeDialogs = processedDialogs.filter(d => d.entityType === 'unknown' || !d.entity);
+    if (unknownTypeDialogs.length > 0) {
+      console.log(`[MTProto DEBUG getFullDialogsData] Found ${unknownTypeDialogs.length} dialogs with unknown type or missing entity`);
+      // Логируем первые 3 для отладки
+      unknownTypeDialogs.slice(0, 3).forEach((d, i) => {
+        console.log(`[MTProto DEBUG getFullDialogsData] Unknown dialog ${i}: entityId=${d.entityId}, entityType=${d.entityType}, has entity: ${!!d.entity}`);
+      });
+    }
+    
+    return { entities, dialogs: processedDialogs, raw: result };
+    
+  } catch (error) {
+    console.error(`[MTProto ERROR getFullDialogsData] Failed for user ${userId}:`, error);
+    throw error;
+  }
+}
+
+// --- Function to get all chats with accessHash ---
+export async function getAllChats(userId: number): Promise<any> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getAllChats] Getting all chats for user ID: ${userId}`);
+    
+    // Получаем диалоги пользователя
+    console.log(`[MTProto DEBUG getAllChats] Using messages.getDialogs API...`);
+    
+    const result = await currentClient.invoke(
+      new Api.messages.GetDialogs({
+        offsetDate: 0,
+        offsetId: 0,
+        offsetPeer: new Api.InputPeerEmpty(),
+        limit: 100,
+        hash: BigInt(0),
+        excludePinned: false,
+        folderId: 0
+      })
+    );
+    
+    console.log(`[MTProto DEBUG getAllChats] Got result with class name: ${result.className}`);
+    
+    // Подготовим структуры для результатов
+    let processedChats: any[] = [];
+    let accessHashMap: Record<string, string> = {};
+    
+    // Пользователи и чаты для быстрого поиска по ID
+    const usersById: Record<string, any> = {};
+    const chatsById: Record<string, any> = {};
+    
+    // Индексируем пользователей
+    if ('users' in result && Array.isArray(result.users)) {
+      console.log(`[MTProto DEBUG getAllChats] Processing ${result.users.length} users`);
+      result.users.forEach((user: any) => {
+        if (user.id) {
+          const userId = user.id.toString();
+          usersById[userId] = user;
+          
+          // Сохраняем accessHash для пользователей
+          if (user.accessHash) {
+            accessHashMap[userId] = user.accessHash.toString();
+          }
+        }
+      });
+    }
+    
+    // Индексируем чаты и каналы
+    if ('chats' in result && Array.isArray(result.chats)) {
+      console.log(`[MTProto DEBUG getAllChats] Processing ${result.chats.length} chats/channels`);
+      result.chats.forEach((chat: any) => {
+        if (chat.id) {
+          const chatId = chat.id.toString();
+          chatsById[chatId] = chat;
+          
+          // Сохраняем accessHash для чатов/каналов
+          if (chat.accessHash) {
+            accessHashMap[chatId] = chat.accessHash.toString();
+          }
+        }
+      });
+    }
+    
+    // Обрабатываем диалоги, связывая их с чатами/пользователями
+    if ('dialogs' in result && Array.isArray(result.dialogs)) {
+      console.log(`[MTProto DEBUG getAllChats] Processing ${result.dialogs.length} dialogs`);
+      
+      result.dialogs.forEach((dialog: any) => {
+        if (!dialog.peer) {
+          console.log(`[MTProto DEBUG getAllChats] Dialog missing peer property`);
+          return;
+        }
+        
+        const peer = dialog.peer;
+        let entityType = '';
+        let entityId = '';
+        let title = '';
+        let entity = null;
+        
+        // Определяем тип и ID в зависимости от peer
+        if (peer.className === 'PeerUser' && peer.userId) {
+          entityType = 'private';
+          entityId = peer.userId.toString();
+          
+          // Получаем пользователя
+          const user = usersById[entityId];
+          if (user) {
+            // Формируем название для личного чата - имя пользователя
+            title = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.username || 'Unknown User';
+            entity = user;
+          } else {
+            title = `User ${entityId}`;
+          }
+        } else if (peer.className === 'PeerChat' && peer.chatId) {
+          entityType = 'group';
+          entityId = peer.chatId.toString();
+          
+          // Получаем чат
+          const chat = chatsById[entityId];
+          if (chat) {
+            title = chat.title || `Group ${entityId}`;
+            entity = chat;
+          } else {
+            title = `Group ${entityId}`;
+          }
+        } else if (peer.className === 'PeerChannel' && peer.channelId) {
+          const channelId = peer.channelId.toString();
+          entityId = channelId;
+          
+          // Получаем канал
+          const channel = chatsById[channelId];
+          if (channel) {
+            // Определяем тип: канал или супергруппа
+            entityType = channel.megagroup ? 'supergroup' : 'channel';
+            title = channel.title || `Channel ${channelId}`;
+            entity = channel;
+          } else {
+            entityType = 'channel'; // По умолчанию считаем каналом
+            title = `Channel ${channelId}`;
+          }
+        }
+        
+        // Если определили тип и ID, добавляем в результат
+        if (entityType && entityId) {
+          processedChats.push({
+            id: entityId,
+            type: entityType,
+            title: title,
+            // Добавляем другие полезные свойства
+            username: entity?.username,
+            photo: entity?.photo,
+            accessHash: entity?.accessHash ? entity.accessHash.toString() : null,
+            unreadCount: dialog.unreadCount || 0,
+            isAdmin: entity?.adminRights ? true : false,
+            lastMessageId: dialog.topMessage
+          });
+        }
+      });
+    }
+    
+    console.log(`[MTProto DEBUG getAllChats] Processed ${processedChats.length} chats and ${Object.keys(accessHashMap).length} access hashes`);
+    
+    return { 
+      chats: processedChats, 
+      accessHashMap: accessHashMap,
+      raw: result // Для отладки можем вернуть и сырые данные
+    };
+  } catch (error) {
+    console.error(`[MTProto ERROR getAllChats] Failed to get all chats for user ${userId}:`, error);
+    throw error;
+  }
+}
+
+// --- Function to get specific chats ---
+export async function getChatsById(userId: number, chatIds: string[]): Promise<any> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getChatsById] Getting info for ${chatIds.length} chats for user ID: ${userId}`);
+    
+    // Преобразуем строковые ID в BigInt для API
+    const bigIntIds = chatIds.map(id => BigInt(id));
+    
+    try {
+      // Используем API messages.getChats для получения информации о конкретных чатах
+      const result = await currentClient.invoke(
+        new Api.messages.GetChats({
+          id: bigIntIds
+        })
+      );
+      
+      console.log(`[MTProto DEBUG getChatsById] Got result with class name: ${result.className}`);
+      
+      let chats: any[] = [];
+      let accessHashMap: Record<string, string> = {};
+      
+      // Обрабатываем результат
+      if (result && 'chats' in result && Array.isArray(result.chats)) {
+        console.log(`[MTProto DEBUG getChatsById] Got ${result.chats.length} chats`);
+        
+        // Создаем карту ID -> accessHash для каждого чата
+        result.chats.forEach((chat: any) => {
+          if (chat.id && chat.accessHash) {
+            accessHashMap[chat.id.toString()] = chat.accessHash.toString();
+          }
+        });
+        
+        chats = result.chats;
+      }
+      
+      return { chats, accessHashMap };
+    } catch (error) {
+      console.log(`[MTProto DEBUG getChatsById] GetChats API error:`, error);
+      
+      // Преобразуем error в тип с сообщением (если оно есть)
+      const apiError = error as { message?: string };
+      
+      // Если возникла ошибка CHAT_ID_INVALID, возможно это каналы или супергруппы
+      if (apiError && typeof apiError.message === 'string' && apiError.message.includes('CHAT_ID_INVALID')) {
+        console.log(`[MTProto DEBUG getChatsById] Some IDs may be channels, trying to get them individually...`);
+        
+        const accessHashMap: Record<string, string> = {};
+        const chats: any[] = [];
+        
+        // Попробуем получить информацию о каждом чате отдельно через channels.getFullChannel или users.getFullUser
+        // Эта часть кода требует дополнительной реализации в зависимости от ваших требований
+        
+        return { 
+          chats, 
+          accessHashMap, 
+          error: "Some chats couldn't be fetched: " + (typeof apiError.message === 'string' ? apiError.message : 'Unknown error') 
+        };
+      }
+      
+      throw error;
+    }
+  } catch (error) {
+    console.error(`[MTProto ERROR getChatsById] Failed to get chats by ID for user ${userId}:`, error);
+    throw error;
+  }
+}
+
+// --- Function to get channel/supergroup messages directly ---
+export async function getChannelMessages(
+  userId: number,
+  channelId: string,
+  accessHash: string,
+  messageIds: number[] = []
+): Promise<any> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getChannelMessages] Getting messages for channel ${channelId} with accessHash ${accessHash}`);
+    
+    // Создаем InputChannel с channelId и accessHash
+    const inputChannel = new Api.InputChannel({
+      channelId: BigInt(channelId) as any, // Приведение типа для совместимости
+      accessHash: BigInt(accessHash) as any // Приведение типа для совместимости
+    });
+    
+    // Если messageIds не указаны, получаем историю сообщений 
+    if (!messageIds || messageIds.length === 0) {
+      console.log(`[MTProto DEBUG getChannelMessages] No message IDs provided, getting history (last 20 messages)`);
+      
+      // Создаем InputPeer для API.messages.GetHistory
+      const inputPeer = new Api.InputPeerChannel({
+        channelId: BigInt(channelId) as any, // Приведение типа для совместимости 
+        accessHash: BigInt(accessHash) as any // Приведение типа для совместимости
+      });
+      
+      // Получаем историю через API
+      const history = await currentClient.invoke(
+        new Api.messages.GetHistory({
+          peer: inputPeer,
+          offsetId: 0,
+          offsetDate: 0,
+          addOffset: 0,
+          limit: 20,
+          maxId: 0,
+          minId: 0,
+          hash: BigInt(0) as any // Приведение типа для совместимости
+        })
+      );
+      
+      console.log(`[MTProto DEBUG getChannelMessages] Got history result with class name: ${history.className}`);
+      
+      // Проверяем результат безопасно
+      if (history && 'messages' in history && Array.isArray(history.messages)) {
+        console.log(`[MTProto DEBUG getChannelMessages] Retrieved ${history.messages.length} messages for channel ${channelId}`);
+      }
+      
+      return history;
+    }
+    
+    // Если указаны messageIds, получаем конкретные сообщения
+    console.log(`[MTProto DEBUG getChannelMessages] Getting ${messageIds.length} specific messages: ${messageIds.join(', ')}`);
+    
+    // Преобразуем message IDs в InputMessage
+    const inputMessageIds = messageIds.map(id => new Api.InputMessageID({ id }));
+    
+    const result = await currentClient.invoke(
+      new Api.channels.GetMessages({
+        channel: inputChannel,
+        id: inputMessageIds
+      })
+    );
+    
+    console.log(`[MTProto DEBUG getChannelMessages] Got result with class name: ${result.className}`);
+    
+    // Проверяем результат безопасно
+    if (result && 'messages' in result && Array.isArray(result.messages)) {
+      console.log(`[MTProto DEBUG getChannelMessages] Retrieved ${result.messages.length} specific messages for channel ${channelId}`);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error(`[MTProto ERROR getChannelMessages] Failed to get channel messages for user ${userId}, channel ${channelId}:`, error);
+    throw error;
+  }
+}
+
+// --- Function to get full information about a chat/channel ---
+export async function getFullChatInfo(userId: number, chatId: string): Promise<any> {
+  try {
+    const currentClient = await getAuthenticatedClient(userId);
+    console.log(`[MTProto DEBUG getFullChatInfo] Getting full info for chat ${chatId}`);
+    
+    // Преобразуем строковый ID в BigInt для API
+    const bigIntChatId = BigInt(chatId);
+    
+    // Для обычных групп используем messages.getFullChat
+    const result = await currentClient.invoke(
+      new Api.messages.GetFullChat({
+        chatId: bigIntChatId as any, // Приведение типа для совместимости
+      })
+    );
+    
+    console.log(`[MTProto DEBUG getFullChatInfo] Got result with class name: ${result.className}`);
+    
+    return result;
+  } catch (error) {
+    // Если получаем ошибку, возможно это не группа, а канал или пользователь
+    console.error(`[MTProto ERROR getFullChatInfo] Failed to get full chat info for user ${userId}, chat ${chatId}:`, error);
+    
+    // Здесь можно добавить обработку других типов (каналы, пользователи)
+    // if (error.message.includes('CHAT_ID_INVALID')) { ... }
+    
+    throw error;
+  }
+}
+
+// --- Optional: Graceful shutdown ---
+export async function disconnectClient() {
+  if (client && client.connected) {
+    console.log("[MTProto DEBUG] Disconnecting client gracefully...");
+    await client.disconnect();
+    client = undefined;
+    console.log("[MTProto DEBUG] Client disconnected.");
+  }
+} 
