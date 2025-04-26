@@ -71,10 +71,10 @@ export function verifyCode(phoneNumber: string, code: string): boolean {
 }
 
 // Функция отправки кода через Telegram
-export async function sendVerificationSMS(phoneNumber: string, code: string): Promise<boolean> {
+export async function sendVerificationTelegram(phoneNumber: string, code: string): Promise<boolean> {
   try {
     // В любом случае показываем код в консоли для отладки
-    console.log(`[SMS] Verification code for ${phoneNumber}: ${code}`);
+    console.log(`[Telegram] Verification code for ${phoneNumber}: ${code}`);
     
     // Пытаемся найти пользователя по номеру телефона
     const user = await storage.getUserByPhoneNumber(phoneNumber);
@@ -162,7 +162,7 @@ export async function sendVerificationSMS(phoneNumber: string, code: string): Pr
       return true;
     }
   } catch (error) {
-    console.error("Error in sendVerificationSMS:", error);
+    console.error("Error in sendVerificationTelegram:", error);
     return false;
   }
 }

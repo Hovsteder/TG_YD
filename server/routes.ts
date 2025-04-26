@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats } from "./telegram";
-import { generateVerificationCode, verifyCode, sendVerificationSMS } from "./phone-auth";
+import { generateVerificationCode, verifyCode, sendVerificationTelegram } from "./phone-auth";
 import { z } from "zod";
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -362,13 +362,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Генерируем код подтверждения
       const code = await generateVerificationCode(phoneNumber);
       
-      // Отправляем SMS с кодом (в реальном приложении)
-      const smsSent = await sendVerificationSMS(phoneNumber, code);
+      // Отправляем код через Telegram
+      const codeSent = await sendVerificationTelegram(phoneNumber, code);
       
-      if (!smsSent) {
+      if (!codeSent) {
         return res.status(500).json({ 
           success: false,
-          message: 'Не удалось отправить SMS с кодом' 
+          message: 'Не удалось отправить код' 
         });
       }
       
@@ -382,7 +382,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json({
         success: true,
-        message: 'Код подтверждения отправлен',
+        message: 'Код подтверждения отправлен через Telegram',
         expiresIn: 600 // 10 минут
       });
     } catch (error) {
