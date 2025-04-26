@@ -95,6 +95,13 @@ async function getTelegramApiCredentials() {
 // Получение клиента Telegram
 async function getClient(): Promise<TelegramClient> {
   if (client && client.connected) {
+    // Сохраняем сессию при каждом запросе для обеспечения стабильности
+    if (client.session) {
+      const newSession = client.session.save();
+      if (typeof newSession === 'string') {
+        stringSession = newSession;
+      }
+    }
     return client;
   }
 
@@ -112,10 +119,34 @@ async function getClient(): Promise<TelegramClient> {
 
   try {
     await client.connect();
+    
+    // Если есть сохраненная сессия, попытаемся автоматически авторизовать клиент
+    if (stringSession) {
+      try {
+        // Проверяем, авторизован ли клиент
+        if (!client.connected) {
+          await client.connect();
+        }
+        
+        // Попытка получить информацию о текущем пользователе
+        // для проверки авторизации
+        try {
+          const me = await client.getMe();
+          console.log("Client automatically authenticated:", me);
+        } catch (authError) {
+          console.log("Not authenticated yet, waiting for login");
+        }
+      } catch (authError) {
+        console.warn("Failed to automatically authenticate:", authError.message);
+      }
+    }
+    
+    // Сохраняем обновленную сессию
     const newSession = client.session.save();
     if (typeof newSession === 'string') {
       stringSession = newSession;
     }
+    
     console.log("Connected to Telegram API successfully");
     return client;
   } catch (error) {
@@ -516,7 +547,15 @@ export async function getUserDialogs(limit = 5): Promise<any> {
       };
     }
     
-    if (!currentClient.authenticated) {
+    // Проверяем аутентификацию путем попытки получения данных пользователя
+    let isAuthenticated = false;
+    try {
+      // Если это вызовет ошибку, значит клиент не аутентифицирован
+      const me = await currentClient.getMe();
+      isAuthenticated = true;
+      console.log("User is authenticated:", me);
+    } catch (authError: any) {
+      console.error("Error from Telegram API: Not authenticated with Telegram API", authError?.message || "Unknown error");
       return {
         success: false,
         error: "Not authenticated with Telegram API"
@@ -534,33 +573,34 @@ export async function getUserDialogs(limit = 5): Promise<any> {
       console.log(`Retrieved ${dialogs.length} dialogs from Telegram`);
       
       // Собираем информацию о чатах, пользователях и сообщениях
-      const chats = [];
-      const users = [];
-      const messages = [];
+      const chats: any[] = [];
+      const users: any[] = [];
+      const messages: any[] = [];
       
       // Обрабатываем диалоги
       for (const dialog of dialogs) {
         // Получаем информацию о чате/пользователе
         if (dialog.entity) {
-          if (dialog.entity.className === 'User') {
+          const entity = dialog.entity as any;
+          if (entity.className === 'User') {
             users.push({
-              id: dialog.entity.id,
-              first_name: dialog.entity.firstName || '',
-              last_name: dialog.entity.lastName || '',
-              username: dialog.entity.username || '',
-              photo: dialog.entity.photo || null
+              id: entity.id,
+              first_name: entity.firstName || '',
+              last_name: entity.lastName || '',
+              username: entity.username || '',
+              photo: entity.photo || null
             });
           } else {
             chats.push({
-              id: dialog.entity.id,
-              title: dialog.entity.title || '',
-              photo: dialog.entity.photo || null
+              id: entity.id,
+              title: entity.title || '',
+              photo: entity.photo || null
             });
           }
         }
         
         // Добавляем информацию о диалоге
-        const peer = dialog.inputEntity || {};
+        const peer = dialog.inputEntity as any || {};
         const peerType = peer.className || '';
         
         // Определяем тип peer
@@ -584,12 +624,13 @@ export async function getUserDialogs(limit = 5): Promise<any> {
         
         // Добавляем последнее сообщение
         if (dialog.message) {
+          const message = dialog.message as any;
           messages.push({
-            id: dialog.message.id,
-            message: dialog.message.message || '',
-            date: dialog.message.date || new Date(),
-            out: dialog.message.out || false,
-            media: dialog.message.media || null
+            id: message.id,
+            message: message.message || '',
+            date: message.date instanceof Date ? message.date : new Date(),
+            out: message.out || false,
+            media: message.media || null
           });
         }
       }
@@ -598,7 +639,7 @@ export async function getUserDialogs(limit = 5): Promise<any> {
         success: true,
         dialogs: dialogs.map(dialog => {
           let peer = null;
-          const entity = dialog.entity || {};
+          const entity = (dialog.entity as any) || {};
           
           // Определяем тип peer
           if (entity.className === 'User') {
@@ -656,7 +697,15 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
       };
     }
     
-    if (!currentClient.authenticated) {
+    // Проверяем аутентификацию путем попытки получения данных пользователя
+    let isAuthenticated = false;
+    try {
+      // Если это вызовет ошибку, значит клиент не аутентифицирован
+      const me = await currentClient.getMe();
+      isAuthenticated = true;
+      console.log("User is authenticated for chat history:", me);
+    } catch (authError: any) {
+      console.error("Error from Telegram API: Not authenticated with Telegram API", authError?.message || "Unknown error");
       return {
         success: false,
         error: "Not authenticated with Telegram API"
@@ -674,20 +723,22 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
       console.log(`Retrieved ${messages.length} messages from Telegram`);
       
       // Собираем информацию о пользователях
-      const users = [];
+      const users: any[] = [];
       
       // Обрабатываем сообщения
       const formattedMessages = messages.map(msg => {
+        const message = msg as any;
         // Добавляем отправителя в список пользователей
-        if (msg.sender && msg.sender.className === 'User') {
-          const existingUser = users.find(u => u.id === msg.sender.id);
+        if (message.sender && message.sender.className === 'User') {
+          const senderInfo = message.sender as any;
+          const existingUser = users.find(u => u.id === senderInfo.id);
           if (!existingUser) {
             users.push({
-              id: msg.sender.id,
-              first_name: msg.sender.firstName || '',
-              last_name: msg.sender.lastName || '',
-              username: msg.sender.username || '',
-              photo: msg.sender.photo || null
+              id: senderInfo.id,
+              first_name: senderInfo.firstName || '',
+              last_name: senderInfo.lastName || '',
+              username: senderInfo.username || '',
+              photo: senderInfo.photo || null
             });
           }
         }
@@ -695,14 +746,16 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
         // Форматируем сообщение
         return {
           _: 'message',
-          id: msg.id,
-          message: msg.message || '',
-          date: msg.date ? msg.date.getTime() / 1000 : Math.floor(Date.now() / 1000),
-          out: msg.out || false,
-          media: msg.media || null,
-          from_id: msg.sender ? {
+          id: message.id,
+          message: message.message || '',
+          date: message.date instanceof Date 
+            ? Math.floor(message.date.getTime() / 1000) 
+            : Math.floor(Date.now() / 1000),
+          out: message.out || false,
+          media: message.media || null,
+          from_id: message.sender ? {
             _: 'peerUser',
-            user_id: msg.sender.id
+            user_id: (message.sender as any).id
           } : null
         };
       });
