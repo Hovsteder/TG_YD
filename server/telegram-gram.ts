@@ -903,7 +903,101 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
     try {
       console.log(`Fetching chat history with peer:`, peer);
       
-      // Получаем сообщения
+      // Вместо прямого использования переданного peer, получаем правильный InputPeer через API
+      try {
+        // Преобразуем наш peer в формат, который ожидает getEntity
+        let entityId;
+        
+        if (peer._ === 'inputPeerUser') {
+          entityId = peer.user_id;
+          console.log(`Getting user entity for ID: ${entityId} with access_hash: ${peer.access_hash}`);
+          
+          // Пробуем получить пользователя по ID
+          const entity = await currentClient.getEntity(entityId);
+          console.log("Retrieved entity:", entity);
+          
+          // Теперь используем полученную сущность для запроса сообщений
+          const messages = await currentClient.getMessages(entity, {
+            limit: limit
+          });
+          console.log(`Retrieved ${messages.length} messages from Telegram`);
+          
+          // Собираем информацию о пользователях
+          const users: any[] = [];
+          
+          // Обрабатываем сообщения
+          const formattedMessages = messages.map(msg => {
+            const message = msg as any;
+            // Добавляем отправителя в список пользователей
+            if (message.sender && message.sender.className === 'User') {
+              const senderInfo = message.sender as any;
+              const existingUser = users.find(u => u.id === senderInfo.id);
+              if (!existingUser) {
+                users.push({
+                  id: senderInfo.id,
+                  first_name: senderInfo.firstName || '',
+                  last_name: senderInfo.lastName || '',
+                  username: senderInfo.username || '',
+                  photo: senderInfo.photo || null
+                });
+              }
+            }
+            
+            // Форматируем сообщение
+            return {
+              _: 'message',
+              id: message.id,
+              message: message.message || '',
+              date: message.date instanceof Date 
+                ? Math.floor(message.date.getTime() / 1000) 
+                : Math.floor(Date.now() / 1000),
+              out: message.out || false,
+              media: message.media || null,
+              from_id: message.sender ? {
+                _: 'peerUser',
+                user_id: (message.sender as any).id
+              } : null
+            };
+          });
+          
+          return {
+            success: true,
+            messages: formattedMessages,
+            users: users
+          };
+        } else if (peer._ === 'inputPeerChat') {
+          entityId = peer.chat_id;
+          console.log(`Getting chat entity for ID: ${entityId}`);
+        } else if (peer._ === 'inputPeerChannel') {
+          entityId = peer.channel_id;
+          console.log(`Getting channel entity for ID: ${entityId} with access_hash: ${peer.access_hash}`);
+        } else {
+          throw new Error(`Unsupported peer type: ${peer._}`);
+        }
+      } catch (entityError) {
+        console.error("Error getting entity:", entityError);
+        
+        // Если не удалось получить сущность, используем запасной вариант
+        console.log("Falling back to alternative method...");
+        
+        // Для InputPeerUser и InputPeerChannel нужно корректно преобразовать access_hash в BigInt
+        if (peer._ === 'inputPeerUser' || peer._ === 'inputPeerChannel') {
+          // Если access_hash уже строка или число, преобразуем её в BigInt
+          if (typeof peer.access_hash === 'string') {
+            try {
+              peer.access_hash = BigInt(peer.access_hash);
+              console.log(`Converted access_hash string to BigInt: ${peer.access_hash}`);
+            } catch (error) {
+              console.error(`Error converting access_hash to BigInt: ${peer.access_hash}`, error);
+            }
+          } else if (typeof peer.access_hash === 'number') {
+            peer.access_hash = BigInt(peer.access_hash);
+            console.log(`Converted access_hash number to BigInt: ${peer.access_hash}`);
+          }
+        }
+      }
+      
+      // Пробуем получить сообщения напрямую, если предыдущий подход не сработал
       const messages = await currentClient.getMessages(peer, {
         limit: limit
       });

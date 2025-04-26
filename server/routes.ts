@@ -1478,18 +1478,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!isNaN(id)) {
               // Получаем access_hash из базы данных
               const accessHashStr = chat.accessHash || '0';
-              // Преобразуем строку в BigInt на стороне JS
-              console.log(`Using access_hash for ${chatType}_${id}: ${accessHashStr}`);
               
-              // Теперь используем строковое значение access_hash и преобразуем его в число в JS
-              const accessHashNum = accessHashStr ? Number(accessHashStr) : 0;
+              // Используем значение access_hash в исходном виде
+              // Конвертация в BigInt будет происходить в telegram-gram.ts
+              console.log(`Using access_hash for ${chatType}_${id}: ${accessHashStr}`);
                   
               if (chatType === 'user') {
-                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHashNum };
+                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHashStr };
               } else if (chatType === 'chat') {
                 peer = { _: 'inputPeerChat', chat_id: id };
               } else if (chatType === 'channel') {
-                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHashNum };
+                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHashStr };
               }
             }
           }
