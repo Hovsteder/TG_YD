@@ -10,6 +10,7 @@ import SecurityPage from "@/pages/security";
 import DashboardPage from "@/pages/dashboard";
 import AdminPage from "@/pages/admin";
 import AdminLoginPage from "@/pages/admin-login";
+import AdminUserDetailsPage from "@/pages/admin-user-details";
 import NotFound from "@/pages/not-found";
 import { useEffect } from "react";
 
@@ -25,6 +26,7 @@ function Router() {
       <Route path="/chats" component={ChatsPage} />
       <Route path="/admin/login" component={AdminLoginPage} />
       <Route path="/admin" component={AdminPage} />
+      <Route path="/admin/users/:userId" component={AdminUserDetailsPage} />
       <Route component={NotFound} />
     </Switch>
   );

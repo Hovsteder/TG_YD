@@ -87,11 +87,8 @@ export default function UserTable({ usersData, loading }: UserTableProps) {
 
   // Обработчик просмотра деталей пользователя
   const handleViewUserDetails = (userId: number) => {
-    // Здесь будет логика просмотра деталей пользователя
-    toast({
-      title: "Информация",
-      description: `Просмотр деталей пользователя ID: ${userId}`,
-    });
+    // Перенаправляем на страницу деталей пользователя
+    window.location.href = `/admin/users/${userId}`;
   };
 
   // Обработчик изменения страницы
