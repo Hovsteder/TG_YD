@@ -1448,6 +1448,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = req.user as any;
       const { chatId } = req.params;
       const limit = parseInt(req.query.limit as string) || 20;
+      const forceUpdate = req.query.update === 'true'; // Параметр для принудительного обновления
       
       // Получаем чат из базы
       const chat = await storage.getChatByIds(user.id, chatId);
@@ -1460,9 +1461,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let messages = await storage.listChatMessages(chat.id);
       let needsUpdate = false;
       
-      // Если сообщений нет или запрошено больше чем есть в базе, 
-      // получаем сообщения через MTProto API
-      if (messages.length < limit) {
+      // Получаем свежие сообщения через MTProto API при каждом открытии чата
+      // или если сообщений мало, или если запрошено принудительное обновление
+      if (true) { // Всегда обновляем сообщения при запросе
         try {
           // Получаем историю чата через MTProto API
           const { getChatHistory } = await import('./telegram-gram');
