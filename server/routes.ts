@@ -1146,28 +1146,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   }
                 };
                 
-                if (existingChat) {
-                  // Обновляем существующий чат
-                  existingChat = await storage.updateChat(existingChat.id, {
-                    title: chatTitle,
-                    lastMessageDate: getSafeMessageDate(),
-                    lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
-                    photoUrl: chatPhoto || existingChat.photoUrl
-                  });
-                  savedChats.push(existingChat);
-                } else {
-                  // Создаем новый чат
-                  const newChat = await storage.createChat({
-                    userId: user.id,
-                    chatId: chatId,
-                    type: chatType,
-                    title: chatTitle,
-                    lastMessageDate: getSafeMessageDate(),
-                    lastMessageText: lastMessage ? lastMessage.text : '',
-                    unreadCount: dialog.unread_count || 0,
-                    photoUrl: chatPhoto
-                  });
-                  savedChats.push(newChat);
+                try {
+                  if (existingChat) {
+                    console.log(`Updating existing chat with ID ${existingChat.id} (${chatTitle})`);
+                    // Обновляем существующий чат
+                    existingChat = await storage.updateChat(existingChat.id, {
+                      title: chatTitle,
+                      lastMessageDate: getSafeMessageDate(),
+                      lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
+                      photoUrl: chatPhoto || existingChat.photoUrl
+                    });
+                    savedChats.push(existingChat);
+                    console.log(`Chat updated successfully: ${existingChat.id}`);
+                  } else {
+                    console.log(`Creating new chat: ${chatTitle} (${chatId})`);
+                    // Создаем новый чат с доп. проверками
+                    const chatData = {
+                      userId: user.id,
+                      chatId: chatId,
+                      type: chatType,
+                      title: chatTitle,
+                      lastMessageDate: getSafeMessageDate(),
+                      lastMessageText: lastMessage ? lastMessage.text : '',
+                      unreadCount: dialog.unread_count || 0,
+                      photoUrl: chatPhoto
+                    };
+                    console.log("Chat data to insert:", JSON.stringify(chatData, null, 2));
+                    
+                    const newChat = await storage.createChat(chatData);
+                    console.log(`New chat created with ID: ${newChat.id}`);
+                    savedChats.push(newChat);
+                  }
+                } catch (error) {
+                  console.error(`ERROR creating/updating chat ${chatId} (${chatTitle}):`, error);
+                  // Проверяем тип ошибки и выводим дополнительную информацию
+                  if (error instanceof Error) {
+                    console.error('Error stack:', error.stack);
+                    console.error('Error message:', error.message);
+                  }
                 }
               }
             }
@@ -1199,6 +1215,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Тестовый эндпоинт для создания чатов (только для отладки)
+  app.post('/api/chats/create', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const chatData = req.body;
+      
+      // Добавляем ID пользователя
+      chatData.userId = user.id;
+      
+      // Устанавливаем безопасную дату сообщения
+      if (!chatData.lastMessageDate) {
+        chatData.lastMessageDate = new Date();
+      }
+      
+      console.log("Creating test chat with data:", JSON.stringify(chatData, null, 2));
+      
+      // Создаем чат через функцию хранилища
+      const newChat = await storage.createChat(chatData);
+      console.log("Created test chat:", newChat);
+      
+      res.json(newChat);
+    } catch (error) {
+      console.error("Error creating test chat:", error);
+      if (error instanceof Error) {
+        console.error("Error message:", error.message);
+        console.error("Error stack:", error.stack);
+      }
+      res.status(500).json({ error: "Failed to create test chat" });
+    }
+  });
+  
   // 6. Получение сообщений из конкретного чата
   app.get('/api/chats/:chatId/messages', isAuthenticated, async (req, res) => {
     try {
