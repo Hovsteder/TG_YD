@@ -22,7 +22,7 @@ enum AuthStep {
 
 export default function LoginPage() {
   // Хуки и состояния
-  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, linkTelegramToPhone, isAuthenticated, loading } = useAuth();
+  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -72,7 +72,7 @@ export default function LoginPage() {
         // Информировать пользователя о том, что код отправлен в Telegram
         toast({
           title: "Код отправлен",
-          description: "Код подтверждения отправлен в официальное приложение Telegram. Если у вас нет Telegram, код будет показан администратору",
+          description: "Код подтверждения отправлен на ваш аккаунт Telegram. Если приложение недоступно, код будет показан администратору",
         });
       }
     } catch (error) {
@@ -84,26 +84,8 @@ export default function LoginPage() {
     }
   };
 
-  // Обработчик для авторизации через Telegram
-  const handleTelegramAuth = async (result: any) => {
-    // При успешной авторизации через Telegram Widget, привязываем ID к номеру телефона
-    if (result && result.id) {
-      // Отправляем запрос на сервер для связывания Telegram ID с номером телефона
-      const success = await linkTelegramToPhone(result, phoneNumber);
-      
-      if (success) {
-        // Продолжаем процесс верификации кода
-        if (verificationCode.length === 6) {
-          handleVerifyCode();
-        }
-      }
-    }
-  };
-  
-  // Инициализация Telegram авторизации
-  const initTelegramWidget = () => {
-    initTelegramAuth(handleTelegramAuth);
-  };
+  // Функция-заглушка для предотвращения ошибок при ссылках на удаленные функции
+  // Может быть удалена позже, когда все ссылки будут обновлены
 
   // Обработчик для проверки кода подтверждения
   const handleVerifyCode = async () => {
