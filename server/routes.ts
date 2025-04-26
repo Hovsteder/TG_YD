@@ -767,24 +767,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
+  // 5a. Функция принудительного создания тестовых чатов
+  app.post('/api/chats/create-test', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      console.log("Создание тестовых чатов для пользователя:", user.id);
+      
+      const testContacts = [
+        { id: "12345", first_name: "Telegram", last_name: "User 1", username: "test1" },
+        { id: "12346", first_name: "Telegram", last_name: "User 2", username: "test2" },
+        { id: "12347", first_name: "Telegram", last_name: "Support", username: "support" }
+      ];
+      
+      const savedChats = [];
+      
+      for (const contact of testContacts) {
+        // Создание базового чата
+        const userId = contact.id;
+        const chatId = `user_${userId}`;
+        const chatType = 'private';
+        const chatTitle = `${contact.first_name} ${contact.last_name}`;
+        
+        // Безопасная дата
+        const safeDate = new Date();
+        
+        try {
+          // Проверяем существование чата
+          let existingChat = await storage.getChatByIds(user.id, chatId);
+          
+          if (existingChat) {
+            console.log(`Обновляем существующий тестовый чат: ${chatTitle}`);
+            existingChat = await storage.updateChat(existingChat.id, {
+              title: chatTitle,
+              lastMessageDate: safeDate,
+              lastMessageText: "Тестовое сообщение"
+            });
+            savedChats.push(existingChat);
+          } else {
+            console.log(`Создаем новый тестовый чат: ${chatTitle}`);
+            const newChat = await storage.createChat({
+              userId: user.id,
+              chatId: chatId,
+              type: chatType,
+              title: chatTitle,
+              lastMessageDate: safeDate,
+              lastMessageText: "Начало тестового чата",
+              unreadCount: 0,
+              photoUrl: ""
+            });
+            
+            console.log(`Тестовый чат создан с ID: ${newChat.id}`);
+            savedChats.push(newChat);
+          }
+        } catch (error) {
+          console.error(`Ошибка при создании тестового чата ${chatTitle}:`, error);
+        }
+      }
+      
+      // Получаем обновленный список чатов
+      const updatedChats = await storage.listUserChats(user.id);
+      res.json({
+        success: true,
+        created: savedChats.length,
+        chats: updatedChats
+      });
+      
+    } catch (error) {
+      console.error("Ошибка создания тестовых чатов:", error);
+      res.status(500).json({ 
+        success: false,
+        message: "Не удалось создать тестовые чаты"
+      });
+    }
+  });
+  
   // 5. Получение чатов пользователя
   app.get('/api/chats', isAuthenticated, async (req, res) => {
     try {
       const user = req.user as any;
       
+      console.log("Запрос чатов для пользователя:", user.id, user.telegramId);
+      
       // Получаем чаты из базы данных
       let chats = await storage.listUserChats(user.id);
       let needsUpdate = false;
+      
+      console.log(`Найдено ${chats.length} чатов в базе данных`);
       
       // Если чатов нет или их меньше 5, пытаемся получить обновленные данные
       if (chats.length < 5) {
         try {
           // Получаем чаты через MTProto API
           const { getUserDialogs } = await import('./telegram-gram');
+          
+          console.log("Запрашиваем диалоги из Telegram API...");
           const dialogsResult = await getUserDialogs(5);
           
           if (dialogsResult.success) {
             console.log(`Retrieved ${dialogsResult.dialogs?.length || 0} dialogs from Telegram API`);
+            console.log(`Retrieved ${dialogsResult.users?.length || 0} users from Telegram API`);
             
             // Проверяем, есть ли данные
             if (!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) {
@@ -808,8 +889,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const savedChats = [];
             
             console.log("Starting to process dialogs to save in database. Total dialogs:", dialogsResult.dialogs?.length || 0);
-            console.log("Dialogs data:", JSON.stringify(dialogsResult.dialogs, null, 2));
-            console.log("Users data:", JSON.stringify(dialogsResult.users, null, 2));
+            console.log("Total users:", dialogsResult.users?.length || 0);
             
             // Если диалоги отсутствуют или пустые, но есть пользователи - создаем диалоги напрямую из списка пользователей
             if ((!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) && dialogsResult.users && dialogsResult.users.length > 0) {

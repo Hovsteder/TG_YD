@@ -538,9 +538,11 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
 export async function getUserDialogs(limit = 5): Promise<any> {
   try {
     // Получаем клиент Telegram
+    console.log("Инициализируем клиент MTProto для получения диалогов...");
     const currentClient = await getClient();
     
     if (!currentClient.connected) {
+      console.error("MTProto client not connected to Telegram API!");
       return {
         success: false,
         error: "Not connected to Telegram API"
