@@ -922,6 +922,163 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
+  // Обновление чатов из Telegram API с получением access_hash
+  app.get('/api/chats/refresh', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      console.log(`Обновление чатов из Telegram для пользователя: ${user.id} ${user.telegramId}`);
+      
+      // Получаем диалоги из Telegram API
+      try {
+        // Используем из Telegram API
+        const { getUserDialogs } = await import('./telegram-gram');
+        
+        const dialogsResult = await getUserDialogs();
+        
+        if (dialogsResult.success) {
+          const savedChats = [];
+          
+          // Обрабатываем диалоги и сохраняем в базу данных
+          for (const dialog of dialogsResult.dialogs) {
+            let chatId = '';
+            let chatType = '';
+            let chatTitle = '';
+            let chatPhoto = '';
+            let accessHash = '0';
+            
+            // Определяем тип диалога (личный чат, группа, канал)
+            if (dialog.peer && dialog.peer._ === 'peerUser') {
+              const userIdRaw = dialog.peer.user_id;
+              const userId = String(userIdRaw).replace('n', '');
+              
+              const userObj = dialogsResult.users.find((u: any) => {
+                const uId = String(u.id).replace('n', '');
+                return uId === userId;
+              });
+              
+              if (userObj) {
+                chatId = `user_${userId}`;
+                chatType = 'private';
+                chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim();
+                chatPhoto = userObj.photo ? `user_${userId}_photo` : '';
+                
+                if (userObj.access_hash) {
+                  accessHash = String(userObj.access_hash).replace('n', '');
+                  console.log(`Found access_hash for user ${userId}: ${accessHash}`);
+                }
+              }
+            } else if (dialog.peer._ === 'peerChat') {
+              const chatPeerIdRaw = dialog.peer.chat_id;
+              const chatPeerId = String(chatPeerIdRaw).replace('n', '');
+              
+              const chatObj = dialogsResult.chats.find((c: any) => {
+                const cId = String(c.id).replace('n', '');
+                return cId === chatPeerId;
+              });
+              
+              if (chatObj) {
+                chatId = `chat_${chatPeerId}`;
+                chatType = 'group';
+                chatTitle = chatObj.title || '';
+                chatPhoto = chatObj.photo ? `chat_${chatPeerId}_photo` : '';
+              }
+            } else if (dialog.peer._ === 'peerChannel') {
+              const channelIdRaw = dialog.peer.channel_id;
+              const channelId = String(channelIdRaw).replace('n', '');
+              
+              const channelObj = dialogsResult.chats.find((c: any) => {
+                const cId = String(c.id).replace('n', '');
+                return cId === channelId;
+              });
+              
+              if (channelObj) {
+                chatId = `channel_${channelId}`;
+                chatType = 'channel';
+                chatTitle = channelObj.title || '';
+                chatPhoto = channelObj.photo ? `channel_${channelId}_photo` : '';
+                
+                if (channelObj.access_hash) {
+                  accessHash = String(channelObj.access_hash).replace('n', '');
+                  console.log(`Found access_hash for channel ${channelId}: ${accessHash}`);
+                }
+              }
+            }
+            
+            // Обновляем чат в базе данных
+            if (chatId && chatTitle) {
+              try {
+                // Проверяем, существует ли уже этот чат в базе
+                let existingChat = await storage.getChatByIds(user.id, chatId);
+                
+                if (existingChat) {
+                  console.log(`Updating chat ${chatTitle} (${chatId}) with access_hash: ${accessHash}`);
+                  
+                  // Обновляем существующий чат с access_hash
+                  existingChat = await storage.updateChat(existingChat.id, {
+                    title: chatTitle,
+                    photoUrl: chatPhoto || existingChat.photoUrl,
+                    accessHash: accessHash
+                  });
+                  
+                  savedChats.push(existingChat);
+                } else {
+                  console.log(`Creating new chat: ${chatTitle} (${chatId}) with access_hash: ${accessHash}`);
+                  
+                  const currentDate = new Date();
+                  
+                  // Создаем новый чат с access_hash
+                  const chatData = {
+                    userId: user.id,
+                    chatId: chatId,
+                    type: chatType,
+                    title: chatTitle,
+                    lastMessageDate: currentDate,
+                    lastMessageText: '',
+                    unreadCount: dialog.unread_count || 0,
+                    photoUrl: chatPhoto,
+                    accessHash: accessHash
+                  };
+                  
+                  const newChat = await storage.createChat(chatData);
+                  savedChats.push(newChat);
+                }
+              } catch (error) {
+                console.error(`Error updating chat ${chatId} (${chatTitle}):`, error);
+              }
+            }
+          }
+          
+          // Возвращаем обновленные чаты
+          return res.json({ 
+            success: true,
+            message: `Updated ${savedChats.length} chats with access_hash values`,
+            updatedChats: savedChats.length
+          });
+        } else {
+          return res.status(500).json({ 
+            success: false,
+            message: 'Failed to retrieve dialogs from Telegram API',
+            error: dialogsResult.error 
+          });
+        }
+      } catch (error) {
+        console.error('Error refreshing Telegram chats:', error);
+        return res.status(500).json({ 
+          success: false,
+          message: 'Error refreshing Telegram chats',
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    } catch (error) {
+      console.error('Error in chat refresh endpoint:', error);
+      res.status(500).json({ 
+        success: false,
+        message: 'Internal server error',
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+  
   // 5. Получение чатов пользователя
   app.get('/api/chats', isAuthenticated, async (req, res) => {
     try {
@@ -1190,7 +1347,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       title: chatTitle,
                       lastMessageDate: getSafeMessageDate(),
                       lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
-                      photoUrl: chatPhoto || existingChat.photoUrl
+                      photoUrl: chatPhoto || existingChat.photoUrl,
+                      accessHash: dialog.accessHash || existingChat.accessHash || '0'
                     });
                     savedChats.push(existingChat);
                     console.log(`Chat updated successfully: ${existingChat.id}`);
@@ -1205,7 +1363,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       lastMessageDate: getSafeMessageDate(),
                       lastMessageText: lastMessage ? lastMessage.text : '',
                       unreadCount: dialog.unread_count || 0,
-                      photoUrl: chatPhoto
+                      photoUrl: chatPhoto,
+                      accessHash: dialog.accessHash || '0'
                     };
                     console.log("Chat data to insert:", JSON.stringify(chatData, null, 2));
                     
@@ -1317,12 +1476,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const id = parseInt(chatIdParts[1]);
             
             if (!isNaN(id)) {
+              // Получаем access_hash из базы данных
+              const accessHashStr = chat.accessHash || '0';
+              // Преобразуем строку в BigInt на стороне JS
+              console.log(`Using access_hash for ${chatType}_${id}: ${accessHashStr}`);
+              
               if (chatType === 'user') {
-                peer = { _: 'inputPeerUser', user_id: id, access_hash: 0 };
+                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHash };
               } else if (chatType === 'chat') {
                 peer = { _: 'inputPeerChat', chat_id: id };
               } else if (chatType === 'channel') {
-                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: 0 };
+                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHash };
               }
             }
           }
