@@ -27,6 +27,8 @@ interface AuthContextProps {
   login: (telegramData: any) => Promise<void>;
   verify2FA: (telegramId: string, code: string) => Promise<boolean>;
   resend2FACode: (telegramId: string) => Promise<boolean>;
+  // QR-код авторизация
+  loginWithQR: (qrData: any) => Promise<boolean>;
   // Авторизация по телефону
   requestPhoneCode: (phoneNumber: string) => Promise<boolean>;
   verifyPhoneCode: (phoneNumber: string, code: string) => Promise<{ success: boolean; requirePassword: boolean; isNewUser: boolean }>;
@@ -47,6 +49,8 @@ const AuthContext = createContext<AuthContextProps>({
   login: async () => {},
   verify2FA: async () => false,
   resend2FACode: async () => false,
+  // QR-код
+  loginWithQR: async () => false,
   // Phone
   requestPhoneCode: async () => false,
   verifyPhoneCode: async () => ({ success: false, requirePassword: false, isNewUser: false }),
@@ -188,7 +192,47 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
   
-
+  // Авторизация через QR-код
+  const loginWithQR = async (qrData: any) => {
+    try {
+      setLoading(true);
+      
+      if (qrData.success && qrData.user && qrData.sessionToken) {
+        // Сохраняем данные пользователя
+        setUser(qrData.user);
+        
+        // Сохраняем токен сессии
+        setSessionToken(qrData.sessionToken);
+        localStorage.setItem("sessionToken", qrData.sessionToken);
+        
+        // Перенаправляем на страницу админа или дашборда
+        if (qrData.user.isAdmin) {
+          navigate("/admin");
+        } else {
+          navigate("/chats");
+        }
+        
+        toast({
+          title: "Успешный вход",
+          description: `Добро пожаловать, ${qrData.user.firstName || qrData.user.username || "пользователь"}!`,
+        });
+        
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error("QR Login error:", error);
+      toast({
+        variant: "destructive",
+        title: "Ошибка входа",
+        description: "Не удалось выполнить вход через QR-код",
+      });
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Запрос кода подтверждения по телефону
   const requestPhoneCode = async (phone: string) => {
@@ -395,6 +439,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         login,
         verify2FA,
         resend2FACode,
+        // QR-код
+        loginWithQR,
         // Phone
         requestPhoneCode,
         verifyPhoneCode,

@@ -52,20 +52,13 @@ export default function LoginPage() {
     
     // Используем данные пользователя для входа
     if (data.success && data.user && data.sessionToken) {
-      // Сохраняем данные пользователя и токен сессии в контекст авторизации
-      await login(data);
+      // Сохраняем данные пользователя и токен сессии в контекст авторизации с помощью специальной функции для QR-кода
+      await loginWithQR(data);
       
       toast({
         title: "Успешный вход",
         description: "Вы успешно вошли через QR-код",
       });
-      
-      // Перенаправляем на страницу админа или дашборда
-      if (data.user.isAdmin) {
-        navigate("/admin");
-      } else {
-        navigate("/chats");
-      }
     }
   };
 
