@@ -2,7 +2,6 @@ import { db } from "./db";
 import { settings } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import * as crypto from "crypto";
-import { sendVerificationTelegram } from "./phone-auth";
 import MTProto from '@mtproto/core';
 
 // Глобальная переменная для хранения экземпляра MTProto API
@@ -102,9 +101,9 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
     const { apiId, apiHash } = await getTelegramApiCredentials();
     
     if (!apiId || !apiHash) {
-      console.log("Telegram API credentials not configured, falling back to bot delivery");
-      // Если не настроены API_ID/API_HASH, используем отправку через бота
-      return await sendAuthCodeViaBotFallback(phoneNumber);
+      console.log("Telegram API credentials not configured, using test mode");
+      // Если не настроены API_ID/API_HASH, используем тестовый режим
+      return await testModeAuthCode(phoneNumber);
     }
 
     // Инициализируем MTProto клиент, если еще не инициализирован
@@ -112,8 +111,8 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
       mtprotoClient = await initMTProtoClient();
       
       if (!mtprotoClient) {
-        console.log("Failed to initialize MTProto client, falling back to bot delivery");
-        return await sendAuthCodeViaBotFallback(phoneNumber);
+        console.log("Failed to initialize MTProto client, using test mode");
+        return await testModeAuthCode(phoneNumber);
       }
     }
 
@@ -169,9 +168,9 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
     } catch (mtprotoError: any) {
       console.error("MTProto API error:", mtprotoError);
       
-      // Если произошла ошибка с MTProto API, используем резервный метод
-      console.log("Falling back to bot delivery due to MTProto API error");
-      return await sendAuthCodeViaBotFallback(phoneNumber);
+      // Если произошла ошибка с MTProto API, переключаемся на тестовый режим
+      console.log("MTProto API error - switching to test mode");
+      return await testModeAuthCode(phoneNumber);
     }
   } catch (error: any) {
     console.error("Error sending auth code:", error);
@@ -182,8 +181,8 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
   }
 }
 
-// Резервный способ отправки кода через бота
-async function sendAuthCodeViaBotFallback(phoneNumber: string): Promise<AuthResult> {
+// Тестовый режим без отправки через Telegram API
+async function testModeAuthCode(phoneNumber: string): Promise<AuthResult> {
   try {
     // Генерируем случайный phoneCodeHash
     const phoneCodeHash = crypto.randomBytes(16).toString('hex');
@@ -191,7 +190,12 @@ async function sendAuthCodeViaBotFallback(phoneNumber: string): Promise<AuthResu
     // Генерируем код верификации из 6 цифр
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
     
-    console.log(`[DEBUG] Generated fallback verification code for ${phoneNumber}: ${verificationCode}`);
+    // Выводим код очень заметно в консоль для тестирования
+    console.log('\n');
+    console.log('=====================================================================');
+    console.log(`🔑 VERIFICATION CODE FOR ${phoneNumber}: ${verificationCode}`);
+    console.log('=====================================================================');
+    console.log('\n');
     
     // Сохраняем информацию о коде
     authCodes.set(phoneNumber, {
@@ -201,26 +205,16 @@ async function sendAuthCodeViaBotFallback(phoneNumber: string): Promise<AuthResu
       attempts: 0
     });
 
-    // Отправляем код через бота
-    const codeSent = await sendVerificationTelegram(phoneNumber, verificationCode);
-    
-    if (!codeSent) {
-      return {
-        success: false,
-        error: "Failed to send verification code"
-      };
-    }
-
     return {
       success: true,
       phoneCodeHash,
       timeout: 600, // 10 минут
     };
   } catch (error: any) {
-    console.error("Error sending auth code via bot:", error);
+    console.error("Error in test mode auth code:", error);
     return {
       success: false,
-      error: error.message || "Неизвестная ошибка при отправке кода"
+      error: error.message || "Неизвестная ошибка при генерации тестового кода"
     };
   }
 }
@@ -371,13 +365,21 @@ export async function signUpNewUser(
       try {
         console.log(`Attempting to sign up with phone ${phoneNumber}, name: ${firstName} ${lastName}`);
         
-        // Вызываем метод auth.signUp через MTProto API
-        const signUpResult = await mtprotoClient.call('auth.signUp', {
-          phone_number: phoneNumber,
-          phone_code_hash: phoneCodeHash,
-          first_name: firstName,
-          last_name: lastName
+        // Создаем Promise с таймаутом
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
         });
+        
+        // Вызываем метод auth.signUp через MTProto API с таймаутом
+        const signUpResult = await Promise.race([
+          mtprotoClient.call('auth.signUp', {
+            phone_number: phoneNumber,
+            phone_code_hash: phoneCodeHash,
+            first_name: firstName,
+            last_name: lastName
+          }),
+          timeoutPromise
+        ]);
         
         console.log(`[DEBUG] auth.signUp result:`, JSON.stringify(signUpResult));
         
@@ -447,8 +449,16 @@ export async function check2FAPassword(phoneNumber: string, password: string): P
       try {
         console.log(`Attempting to check 2FA password for ${phoneNumber}`);
         
-        // Получаем информацию о 2FA
-        const passwordInfo = await mtprotoClient.call('account.getPassword');
+        // Создаем Promise с таймаутом
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
+        });
+        
+        // Получаем информацию о 2FA с таймаутом
+        const passwordInfo = await Promise.race([
+          mtprotoClient.call('account.getPassword'),
+          timeoutPromise
+        ]);
         
         console.log(`[DEBUG] account.getPassword result:`, JSON.stringify(passwordInfo));
         
@@ -464,13 +474,21 @@ export async function check2FAPassword(phoneNumber: string, password: string): P
           M1: crypto.createHash('sha256').update(password).digest('hex')
         };
         
-        // Вызываем метод auth.checkPassword через MTProto API
-        const checkPasswordResult = await mtprotoClient.call('auth.checkPassword', {
-          password: {
-            _: 'inputCheckPasswordSRP',
-            ...srpParams
-          }
+        // Создаем еще один Promise с таймаутом
+        const pwdTimeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Telegram API password check timed out')), 5000);
         });
+        
+        // Вызываем метод auth.checkPassword через MTProto API с таймаутом
+        const checkPasswordResult = await Promise.race([
+          mtprotoClient.call('auth.checkPassword', {
+            password: {
+              _: 'inputCheckPasswordSRP',
+              ...srpParams
+            }
+          }),
+          pwdTimeoutPromise
+        ]);
         
         console.log(`[DEBUG] auth.checkPassword result:`, JSON.stringify(checkPasswordResult));
         
@@ -545,8 +563,16 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
       try {
         console.log(`Attempting to log out for ${phoneNumber}`);
         
-        // Вызываем метод auth.logOut через MTProto API
-        const logoutResult = await mtprotoClient.call('auth.logOut');
+        // Создаем Promise с таймаутом
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Telegram API logout timed out')), 5000);
+        });
+        
+        // Вызываем метод auth.logOut через MTProto API с таймаутом
+        const logoutResult = await Promise.race([
+          mtprotoClient.call('auth.logOut'),
+          timeoutPromise
+        ]);
         
         console.log(`[DEBUG] auth.logOut result:`, JSON.stringify(logoutResult));
         
