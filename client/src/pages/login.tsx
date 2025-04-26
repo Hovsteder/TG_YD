@@ -2,47 +2,268 @@ import { Fragment, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/context/auth-context";
 import { useLanguage } from "@/hooks/use-language";
-import { handleTelegramAuthCallback } from "@/lib/telegram-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import QRCodeLogin from "@/components/qr-code-login";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import SecurityCodeInput from "@/components/security-code-input";
+import { ZodError, z } from "zod";
+import { useToast } from "@/hooks/use-toast";
+import { Loader2 } from "lucide-react";
+
+// Шаги процесса аутентификации
+enum AuthStep {
+  PHONE_INPUT, // Ввод номера телефона
+  CODE_VERIFICATION, // Верификация кода
+  PASSWORD_LOGIN, // Вход с паролем
+  REGISTER, // Регистрация (установка пароля)
+}
 
 export default function LoginPage() {
-  const { login, isAuthenticated, loading } = useAuth();
+  // Хуки и состояния
+  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
+  const { toast } = useToast();
+  
+  // Состояния для формы
   const [phoneNumber, setPhoneNumber] = useState("+90");
   const [keepSignedIn, setKeepSignedIn] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("Turkey");
   const [showCountryDropdown, setShowCountryDropdown] = useState(false);
-  const [showQRCodeLogin, setShowQRCodeLogin] = useState(false);
+  const [authStep, setAuthStep] = useState<AuthStep>(AuthStep.PHONE_INPUT);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [isNewUser, setIsNewUser] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [tabValue, setTabValue] = useState("phone"); // Активная вкладка: phone или admin
 
-  // Проверка авторизации и обработка результата Telegram авторизации
+  // Проверка авторизации
   useEffect(() => {
     // Если пользователь уже авторизован, перенаправляем на dashboard
     if (isAuthenticated && !loading) {
       navigate("/dashboard");
-      return;
     }
+  }, [isAuthenticated, loading, navigate]);
 
-    // Проверяем, есть ли в URL параметры от Telegram авторизации
-    const telegramAuthData = handleTelegramAuthCallback();
-    if (telegramAuthData) {
-      login(telegramAuthData);
+  // Обработчик для кнопки "Далее" при вводе номера телефона
+  const handleRequestCode = async () => {
+    try {
+      // Валидация номера телефона
+      if (phoneNumber.length < 8) {
+        toast({
+          variant: "destructive",
+          title: "Ошибка",
+          description: "Пожалуйста, введите корректный номер телефона",
+        });
+        return;
+      }
+      
+      // Запрос кода подтверждения
+      const success = await requestPhoneCode(phoneNumber);
+      
+      if (success) {
+        setAuthStep(AuthStep.CODE_VERIFICATION);
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка отправки кода",
+        description: "Не удалось отправить код подтверждения",
+      });
     }
-  }, [isAuthenticated, loading, navigate, login]);
-
-  // Обработчик кнопки входа через Telegram
-  const handleNext = () => {
-    // В реальном приложении здесь мы бы отправили номер телефона 
-    // и получили код подтверждения, но мы используем OAuth flow
-    window.location.href = `https://oauth.telegram.org/auth?bot_id=${import.meta.env.VITE_TELEGRAM_BOT_ID || ''}&origin=${encodeURIComponent(window.location.origin)}&return_to=${encodeURIComponent(window.location.origin)}`;
   };
 
-  // Обработчик входа по QR коду
-  const handleLoginByQRCode = () => {
-    setShowQRCodeLogin(true);
+  // Обработчик для проверки кода подтверждения
+  const handleVerifyCode = async () => {
+    try {
+      // Валидация кода
+      if (verificationCode.length !== 6) {
+        toast({
+          variant: "destructive",
+          title: "Неверный код",
+          description: "Код должен содержать 6 цифр",
+        });
+        return;
+      }
+
+      // Проверка кода
+      const result = await verifyPhoneCode(phoneNumber, verificationCode);
+      
+      if (result.success) {
+        if (result.requirePassword) {
+          if (result.isNewUser) {
+            // Новый пользователь - переходим к регистрации
+            setIsNewUser(true);
+            setAuthStep(AuthStep.REGISTER);
+          } else {
+            // Существующий пользователь - переходим к входу с паролем
+            setIsNewUser(false);
+            setAuthStep(AuthStep.PASSWORD_LOGIN);
+          }
+        }
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Неверный код",
+          description: "Введенный код неверен или истек срок его действия",
+        });
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка проверки кода",
+        description: "Не удалось проверить код подтверждения",
+      });
+    }
+  };
+
+  // Обработчик для установки пароля при регистрации
+  const handleSetupPassword = async () => {
+    try {
+      // Валидация пароля
+      if (password.length < 6) {
+        toast({
+          variant: "destructive",
+          title: "Слабый пароль",
+          description: "Пароль должен содержать минимум 6 символов",
+        });
+        return;
+      }
+      
+      if (password !== confirmPassword) {
+        toast({
+          variant: "destructive",
+          title: "Пароли не совпадают",
+          description: "Введенные пароли не совпадают",
+        });
+        return;
+      }
+      
+      // Отправляем данные для регистрации
+      const success = await setupPassword(phoneNumber, password, firstName, lastName, email);
+      
+      if (!success) {
+        toast({
+          variant: "destructive",
+          title: "Ошибка регистрации",
+          description: "Не удалось завершить регистрацию",
+        });
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка регистрации",
+        description: "Не удалось завершить регистрацию",
+      });
+    }
+  };
+
+  // Обработчик для входа с паролем
+  const handleLoginWithPassword = async () => {
+    try {
+      if (password.length < 1) {
+        toast({
+          variant: "destructive",
+          title: "Введите пароль",
+          description: "Пожалуйста, введите пароль",
+        });
+        return;
+      }
+      
+      const success = await loginWithPassword(phoneNumber, password);
+      
+      if (!success) {
+        toast({
+          variant: "destructive",
+          title: "Ошибка входа",
+          description: "Неверный пароль",
+        });
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Ошибка входа",
+        description: "Не удалось выполнить вход",
+      });
+    }
+  };
+
+  // Обработчик выбора страны
+  const handleCountrySelect = (country: string, code: string) => {
+    setSelectedCountry(country);
+    setPhoneNumber(code);
+    setShowCountryDropdown(false);
+  };
+
+  // Переход на шаг назад
+  const handleBack = () => {
+    if (authStep === AuthStep.CODE_VERIFICATION) {
+      setAuthStep(AuthStep.PHONE_INPUT);
+    } else if (authStep === AuthStep.PASSWORD_LOGIN || authStep === AuthStep.REGISTER) {
+      setAuthStep(AuthStep.CODE_VERIFICATION);
+    }
+  };
+
+  // Определяем, какую кнопку показывать в зависимости от шага
+  const renderActionButton = () => {
+    switch (authStep) {
+      case AuthStep.PHONE_INPUT:
+        return (
+          <Button
+            className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
+            onClick={handleRequestCode}
+            disabled={loading || phoneNumber.length < 5}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            {t('signin.next')}
+          </Button>
+        );
+      case AuthStep.CODE_VERIFICATION:
+        return (
+          <Button
+            className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
+            onClick={handleVerifyCode}
+            disabled={loading || verificationCode.length !== 6}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            {t('signin.verify')}
+          </Button>
+        );
+      case AuthStep.PASSWORD_LOGIN:
+        return (
+          <Button
+            className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
+            onClick={handleLoginWithPassword}
+            disabled={loading || password.length < 1}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            {t('signin.login')}
+          </Button>
+        );
+      case AuthStep.REGISTER:
+        return (
+          <Button
+            className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
+            onClick={handleSetupPassword}
+            disabled={loading || password.length < 6 || password !== confirmPassword}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            {t('signin.register')}
+          </Button>
+        );
+    }
   };
 
   // Расширенный список стран для выпадающего списка
@@ -148,13 +369,6 @@ export default function LoginPage() {
     { name: "Vietnam", code: "+84" },
   ];
 
-  // Обработчик выбора страны
-  const handleCountrySelect = (country: string, code: string) => {
-    setSelectedCountry(country);
-    setPhoneNumber(code);
-    setShowCountryDropdown(false);
-  };
-
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-white">
       <div className="max-w-md w-full px-4">
@@ -165,91 +379,236 @@ export default function LoginPage() {
               <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
             </svg>
           </div>
-          <h1 className="text-2xl font-bold mb-1 text-center">{t('signin.title')}</h1>
+          <h1 className="text-2xl font-bold mb-1 text-center">
+            {authStep === AuthStep.PHONE_INPUT && t('signin.title')}
+            {authStep === AuthStep.CODE_VERIFICATION && t('signin.verification')}
+            {authStep === AuthStep.PASSWORD_LOGIN && t('signin.enter_password')}
+            {authStep === AuthStep.REGISTER && t('signin.setup_password')}
+          </h1>
           <p className="text-gray-500 text-center text-sm">
-            {t('signin.subtitle')}
-            <br />
-            {t('signin.phone')}
+            {authStep === AuthStep.PHONE_INPUT && (
+              <>
+                {t('signin.subtitle')}
+                <br />
+                {t('signin.phone')}
+              </>
+            )}
+            {authStep === AuthStep.CODE_VERIFICATION && (
+              <>
+                {t('signin.code_sent')} {phoneNumber}
+              </>
+            )}
+            {authStep === AuthStep.PASSWORD_LOGIN && (
+              <>
+                {t('signin.password_prompt')}
+              </>
+            )}
+            {authStep === AuthStep.REGISTER && (
+              <>
+                {t('signin.create_password')}
+              </>
+            )}
           </p>
         </div>
 
-        {/* Форма входа */}
-        <div className="mb-8">
-          {/* Выбор страны */}
-          <div className="mb-4">
-            <label className="block text-xs text-gray-500 mb-1">{t('signin.country')}</label>
-            <div className="relative">
-              <button
-                className="w-full py-3 px-4 border border-gray-300 rounded-md flex items-center justify-between"
-                onClick={() => setShowCountryDropdown(!showCountryDropdown)}
-                type="button"
-              >
-                <span>{selectedCountry}</span>
-                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              
-              {/* Выпадающий список стран */}
-              {showCountryDropdown && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  {countries.map((country) => (
+        {/* Табы для переключения между обычным входом и входом для админа */}
+        <Tabs value={tabValue} onValueChange={setTabValue} className="mb-6">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="phone">{t('signin.user_login')}</TabsTrigger>
+            <TabsTrigger value="admin">{t('signin.admin_login')}</TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="phone" className="mt-4">
+            {/* Форма входа */}
+            <div className="mb-8">
+              {/* Шаг 1: Ввод номера телефона */}
+              {authStep === AuthStep.PHONE_INPUT && (
+                <>
+                  {/* Выбор страны */}
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.country')}</label>
+                    <div className="relative">
+                      <button
+                        className="w-full py-3 px-4 border border-gray-300 rounded-md flex items-center justify-between"
+                        onClick={() => setShowCountryDropdown(!showCountryDropdown)}
+                        type="button"
+                      >
+                        <span>{selectedCountry}</span>
+                        <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      
+                      {/* Выпадающий список стран */}
+                      {showCountryDropdown && (
+                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {countries.map((country) => (
+                            <button
+                              key={country.code}
+                              className="w-full px-4 py-2 text-left hover:bg-gray-100"
+                              onClick={() => handleCountrySelect(country.name, country.code)}
+                            >
+                              {country.name} ({country.code})
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Ввод номера телефона */}
+                  <div className="mb-6">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.phone')}</label>
+                    <Input
+                      type="tel"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                  </div>
+
+                  {/* Чекбокс "Оставаться в системе" */}
+                  <div className="flex items-center mb-6">
+                    <Checkbox
+                      id="keep-signed-in"
+                      checked={keepSignedIn}
+                      onCheckedChange={(checked) => setKeepSignedIn(!!checked)}
+                      className="h-4 w-4 border-gray-300 rounded text-[#38A2E1]"
+                    />
+                    <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-600">
+                      {t('signin.keep_signed')}
+                    </label>
+                  </div>
+                </>
+              )}
+
+              {/* Шаг 2: Верификация кода */}
+              {authStep === AuthStep.CODE_VERIFICATION && (
+                <div className="mb-6">
+                  <label className="block text-xs text-gray-500 mb-3">{t('signin.enter_code')}</label>
+                  
+                  <div className="my-8">
+                    <SecurityCodeInput
+                      value={verificationCode}
+                      onChange={setVerificationCode}
+                      onComplete={handleVerifyCode}
+                      disabled={loading}
+                    />
+                  </div>
+                  
+                  {/* Кнопка "Отправить код повторно" */}
+                  <div className="mt-4 mb-4 text-center">
                     <button
-                      key={country.code}
-                      className="w-full px-4 py-2 text-left hover:bg-gray-100"
-                      onClick={() => handleCountrySelect(country.name, country.code)}
+                      className="text-[#38A2E1] text-sm hover:underline"
+                      onClick={handleRequestCode}
+                      disabled={loading}
                     >
-                      {country.name} ({country.code})
+                      {t('signin.resend_code')}
                     </button>
-                  ))}
+                  </div>
                 </div>
               )}
+
+              {/* Шаг 3: Вход с паролем (для существующих пользователей) */}
+              {authStep === AuthStep.PASSWORD_LOGIN && (
+                <div className="mb-6">
+                  <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full py-3 px-4 border border-gray-300 rounded-md mb-4"
+                  />
+                </div>
+              )}
+
+              {/* Шаг 4: Регистрация (установка пароля для новых пользователей) */}
+              {authStep === AuthStep.REGISTER && (
+                <>
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.first_name')}</label>
+                    <Input
+                      type="text"
+                      value={firstName}
+                      onChange={(e) => setFirstName(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.last_name')}</label>
+                    <Input
+                      type="text"
+                      value={lastName}
+                      onChange={(e) => setLastName(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.email')}</label>
+                    <Input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.password')}</label>
+                    <Input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div className="mb-6">
+                    <label className="block text-xs text-gray-500 mb-1">{t('signin.confirm_password')}</label>
+                    <Input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="w-full py-3 px-4 border border-gray-300 rounded-md"
+                    />
+                    {password !== confirmPassword && confirmPassword && (
+                      <p className="text-red-500 text-xs mt-1">{t('signin.passwords_not_match')}</p>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Кнопка действия (в зависимости от шага) */}
+              {renderActionButton()}
+              
+              {/* Кнопка "Назад" (показывается на всех шагах кроме первого) */}
+              {authStep !== AuthStep.PHONE_INPUT && (
+                <button 
+                  className="w-full text-[#38A2E1] text-sm mt-4 hover:underline"
+                  onClick={handleBack}
+                  disabled={loading}
+                >
+                  {t('signin.back')}
+                </button>
+              )}
             </div>
-          </div>
-
-          {/* Ввод номера телефона */}
-          <div className="mb-6">
-            <label className="block text-xs text-gray-500 mb-1">{t('signin.phone')}</label>
-            <Input
-              type="tel"
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              className="w-full py-3 px-4 border border-gray-300 rounded-md"
-            />
-          </div>
-
-          {/* Чекбокс "Оставаться в системе" */}
-          <div className="flex items-center mb-6">
-            <Checkbox
-              id="keep-signed-in"
-              checked={keepSignedIn}
-              onCheckedChange={(checked) => setKeepSignedIn(!!checked)}
-              className="h-4 w-4 border-gray-300 rounded text-[#38A2E1]"
-            />
-            <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-600">
-              {t('signin.keep_signed')}
-            </label>
-          </div>
-
-          {/* Кнопка Next */}
-          <Button
-            className="w-full bg-[#38A2E1] hover:bg-[#2B90CB] text-white font-medium py-3 rounded-md"
-            onClick={handleNext}
-            disabled={loading || phoneNumber.length < 5}
-          >
-            {t('signin.next')}
-          </Button>
-        </div>
-
-        {/* Ссылка на вход по QR коду */}
-        <div className="text-center">
-          <button
-            className="text-[#38A2E1] text-sm font-semibold uppercase hover:underline"
-            onClick={handleLoginByQRCode}
-          >
-            {t('signin.qr')}
-          </button>
-        </div>
+          </TabsContent>
+          
+          <TabsContent value="admin" className="mt-4">
+            {/* Перенаправление на страницу входа для админа */}
+            <div className="text-center py-8">
+              <p className="mb-4 text-gray-600">{t('signin.admin_info')}</p>
+              <Button 
+                className="bg-[#38A2E1] hover:bg-[#2B90CB] text-white" 
+                onClick={() => navigate("/admin-login")}
+              >
+                {t('signin.go_admin')}
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
 
         {/* Выбор языка */}
         <div className="mt-8 text-center">
@@ -259,20 +618,8 @@ export default function LoginPage() {
           >
             {t(language === 'en' ? 'signin.continue_ru' : 'signin.continue_en')}
           </button>
-          
-          {/* Тестовая ссылка на админ-панель */}
-          <div className="mt-4">
-            <a href="/admin" className="text-[#38A2E1] text-sm hover:underline">
-              Перейти к админ-панели (для тестирования)
-            </a>
-          </div>
         </div>
       </div>
-      
-      {/* QR-код модальное окно */}
-      {showQRCodeLogin && (
-        <QRCodeLogin onClose={() => setShowQRCodeLogin(false)} />
-      )}
     </div>
   );
 }
