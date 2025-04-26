@@ -644,7 +644,7 @@ export default function LoginPage() {
             className="text-[#38A2E1] text-sm font-medium hover:underline"
             onClick={() => setLanguage(language === 'en' ? 'ru' : 'en')}
           >
-            {t(language === 'en' ? 'signin.continue_ru' : 'signin.continue_en')}
+            {language === 'en' ? t('signin.continue_ru') : t('signin.continue_en')}
           </button>
         </div>
       </div>

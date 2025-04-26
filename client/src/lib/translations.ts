@@ -157,7 +157,11 @@ export const translations: Record<string, TranslationKey> = {
   },
   "signin.continue_en": {
     en: "Continue in English",
-    ru: "Продолжить на английском"
+    ru: "Continue in English"
+  },
+  "signin.continue_ru": {
+    en: "Продолжить на русском",
+    ru: "Продолжить на русском"
   },
   "signin.qr_login": {
     en: "Quick login with QR code",
