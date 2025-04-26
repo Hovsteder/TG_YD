@@ -46,7 +46,8 @@ export default function ChatsPage() {
     queryKey: ["/api/chats", selectedChat?.id, "messages"],
     queryFn: async () => {
       if (!selectedChat) return [];
-      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages`);
+      // Добавляем параметр update=true для обновления сообщений при каждом запросе
+      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages?update=true`);
       return res.json() as Promise<Message[]>;
     },
     enabled: !!selectedChat,
@@ -55,6 +56,10 @@ export default function ChatsPage() {
   // Обработчик выбора чата
   const handleSelectChat = (chat: Chat) => {
     setSelectedChat(chat);
+    // При выборе чата запускаем обновление сообщений
+    setTimeout(() => {
+      refetchMessages();
+    }, 100); // Небольшая задержка, чтобы query hook успел обновиться с новым selectedChat
   };
 
   // Обработчик отправки сообщения (заглушка)
@@ -78,7 +83,7 @@ export default function ChatsPage() {
     });
   };
 
-  // Обработка ошибок
+  // Обработка ошибок и автоматическое обновление при загрузке страницы
   useEffect(() => {
     if (chatsError) {
       toast({
@@ -88,6 +93,13 @@ export default function ChatsPage() {
       });
     }
   }, [chatsError, toast, t]);
+  
+  // Обновляем список чатов при монтировании компонента
+  useEffect(() => {
+    if (isAuthenticated) {
+      refetchChats();
+    }
+  }, [isAuthenticated, refetchChats]);
 
   if (!isAuthenticated) {
     return (
@@ -171,23 +183,43 @@ export default function ChatsPage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           {selectedChat ? (
             <>
-              <div className="p-3 border-b flex items-center space-x-3">
-                <Avatar>
-                  <AvatarImage src={selectedChat.photoUrl || ""} />
-                  <AvatarFallback>
-                    {(selectedChat.title || "CH").substring(0, 2).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <h2 className="font-medium">{selectedChat.title || t("unknown")}</h2>
-                  <p className="text-xs text-muted-foreground">
-                    {selectedChat.type === "private"
-                      ? t("private_chat")
-                      : selectedChat.type === "group"
-                      ? t("group")
-                      : t("channel")}
-                  </p>
+              <div className="p-3 border-b flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <Avatar>
+                    <AvatarImage src={selectedChat.photoUrl || ""} />
+                    <AvatarFallback>
+                      {(selectedChat.title || "CH").substring(0, 2).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <h2 className="font-medium">{selectedChat.title || t("unknown")}</h2>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedChat.type === "private"
+                        ? t("private_chat")
+                        : selectedChat.type === "group"
+                        ? t("group")
+                        : t("channel")}
+                    </p>
+                  </div>
                 </div>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={() => refetchMessages()}
+                  title={t("refresh_messages")}
+                  disabled={isLoadingMessages}
+                >
+                  {isLoadingMessages ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 2v6h-6"></path>
+                      <path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path>
+                      <path d="M3 22v-6h6"></path>
+                      <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
+                    </svg>
+                  )}
+                </Button>
               </div>
 
               <ScrollArea className="flex-1 p-4">

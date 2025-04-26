@@ -1538,7 +1538,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       senderName: senderName,
                       text: msg.message,
                       sentAt: messageDate,
-                      timestamp: new Date(), // Добавляем timestamp как текущее время
+                      timestamp: messageDate, // Используем реальное время сообщения из Telegram
                       isOutgoing: msg.out || false,
                       mediaType: msg.media ? msg.media._ : null,
                       mediaUrl: null // Пока не загружаем медиа
