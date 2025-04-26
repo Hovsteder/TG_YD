@@ -1473,8 +1473,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (shouldUpdate) {
         console.log(`Обновляем сообщения для чата ${chatId}, shouldUpdate=${shouldUpdate}, forceUpdate=${forceUpdate}`);
         try {
-          // Получаем историю чата через MTProto API
-          const { getChatHistory } = await import('./telegram-gram');
+          // Используем исправленную реализацию получения истории чата
+          const { getChatHistory } = await import('./telegram-gram-fixed');
           
           // Формируем правильный peer объект на основе структуры chatId
           let peer = null;

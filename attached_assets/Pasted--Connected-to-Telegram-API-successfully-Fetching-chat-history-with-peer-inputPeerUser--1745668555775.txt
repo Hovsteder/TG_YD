@@ -1,0 +1,51 @@
+}
+Connected to Telegram API successfully
+Fetching chat history with peer: {
+  _: 'inputPeerUser',
+  user_id: 5984989141,
+  access_hash: '-3367002369761807422'
+}
+Trying to get messages using getMessages...
+Getting messages for entity ID: 5984989141
+Error getting messages with inputEntity: Cannot cast InputPeerUser to any kind of peer
+Error getting entity: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+Error from Telegram API: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+11:55:44 AM [express] GET /api/chats/user_5984989141/messages 304 in 1235ms :: [{"id":84,"chatId":8,"…
+Запрос сообщений для чата user_5984989141, shouldUpdate=true, forceUpdate=true, update=true
+Обновляем сообщения для чата user_5984989141, shouldUpdate=true, forceUpdate=true
+Using access_hash for user_5984989141: -3367002369761807422
+Saving Telegram session to database...
+Telegram session saved successfully to DB
+Fetching chat history with peer: {
+  _: 'inputPeerUser',
+  user_id: 5984989141,
+  access_hash: '-3367002369761807422'
+}
+Trying to get messages using getMessages...
+Getting messages for entity ID: 5984989141
+Error getting messages with inputEntity: Cannot cast InputPeerUser to any kind of peer
+Error getting entity: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+Error from Telegram API: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+11:55:46 AM [express] GET /api/chats/user_5984989141/messages 304 in 332ms :: [{"id":84,"chatId":8,"m…
+Запрос сообщений для чата user_5984989141, shouldUpdate=true, forceUpdate=false, update=true
+Обновляем сообщения для чата user_5984989141, shouldUpdate=true, forceUpdate=false
+Using access_hash for user_5984989141: -3367002369761807422
+Saving Telegram session to database...
+Telegram session saved successfully to DB
+Fetching chat history with peer: {
+  _: 'inputPeerUser',
+  user_id: 5984989141,
+  access_hash: '-3367002369761807422'
+}
+Trying to get messages using getMessages...
+Getting messages for entity ID: 5984989141
+Error getting messages with inputEntity: Cannot cast InputPeerUser to any kind of peer
+Error getting entity: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+Error from Telegram API: Could not find the input entity for {"userId":"5984989141","className":"PeerUser"}.
+         Please read https://docs.telethon.dev/en/stable/concepts/entities.html to find out more details.
+11:55:47 AM [express] GET /api/chats/user_5984989141/messages 304 in 289ms :: [{"id":84,"chatId":8,"m…
