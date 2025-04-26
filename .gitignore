@@ -15,3 +15,12 @@ yarn-error.log*
 .upm
 replit.nix
 drizzle/
+
+# Docker (больше не используется)
+Dockerfile
+docker-compose.yml
+.dockerignore
+deploy.sh
+
+# Сессии Telegram
+telegram-sessions/
