@@ -557,7 +557,11 @@ export async function createQRLoginCode(): Promise<QRLoginResult> {
         // Создаем URL для QR кода
         // Согласно документации Telegram, URL для QR кода имеет формат:
         // tg://login?token=base64(token)
-        const tokenBase64 = Buffer.from(anyResult.token).toString('base64');
+        // Используем URL-safe base64 без отступов
+        const tokenBase64 = Buffer.from(anyResult.token).toString('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
         const loginUrl = `tg://login?token=${tokenBase64}`;
         
         // Определяем срок действия (если есть)
@@ -605,11 +609,14 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
     // Получаем данные сессии QR
     const sessionData = qrLoginSessions.get(token);
     if (!sessionData) {
+      console.log(`QR session not found for token: ${token}`);
       return {
         success: false,
         error: "QR session not found or expired"
       };
     }
+    
+    console.log(`Found QR session with token: ${token}, expires: ${sessionData.expiresAt.toISOString()}`);
     
     // Проверяем, не истекла ли сессия
     if (new Date() > sessionData.expiresAt) {
