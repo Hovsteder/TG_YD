@@ -4,7 +4,16 @@ import { storage } from "./storage";
 import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats } from "./telegram";
 import { generateVerificationCode, verifyCode, sendVerificationTelegram } from "./phone-auth";
 // import { sendAuthCode, verifyAuthCode, signUpNewUser, check2FAPassword, logoutTelegramUser, initTelegramAuth } from "./telegram-auth";
-import { sendAuthCode, verifyAuthCode, signUpNewUser, check2FAPassword, logoutTelegramUser, initTelegramAuth } from "./telegram-gram";
+import { 
+  sendAuthCode, 
+  verifyAuthCode, 
+  signUpNewUser, 
+  check2FAPassword, 
+  logoutTelegramUser, 
+  initTelegramAuth,
+  createQRLoginCode,
+  checkQRLoginStatus
+} from "./telegram-gram";
 import { z } from "zod";
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -73,6 +82,11 @@ const setPasswordSchema = z.object({
 const phoneLoginSchema = z.object({
   phoneNumber: z.string().min(10).max(15),
   password: z.string().min(1)
+});
+
+// Схема для проверки QR-кода авторизации
+const qrTokenSchema = z.object({
+  token: z.string().min(1)
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -1514,6 +1528,135 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Admin test notification error:', error);
       res.status(500).json({ message: 'Ошибка отправки тестового уведомления' });
+    }
+  });
+  
+  // === МАРШРУТЫ ДЛЯ АВТОРИЗАЦИИ ЧЕРЕЗ QR КОД ===
+  
+  // 1. Создание QR кода для входа
+  app.post('/api/auth/qr/create', async (req, res) => {
+    try {
+      // Генерируем QR код через Telegram API
+      const result = await createQRLoginCode();
+      
+      if (!result.success) {
+        return res.status(500).json({ 
+          success: false,
+          message: result.error || 'Не удалось создать QR код' 
+        });
+      }
+      
+      // Создаем лог о создании QR кода
+      await storage.createLog({
+        userId: null,
+        action: 'qr_code_created',
+        details: { token: result.token },
+        ipAddress: req.ip
+      });
+      
+      return res.status(200).json({
+        success: true,
+        token: result.token,
+        url: result.url,
+        expires: result.expires
+      });
+    } catch (error: any) {
+      console.error('Error creating QR code:', error);
+      res.status(500).json({ 
+        success: false,
+        message: error.message || 'Ошибка создания QR кода' 
+      });
+    }
+  });
+  
+  // 2. Проверка статуса авторизации по QR коду
+  app.post('/api/auth/qr/check', async (req, res) => {
+    try {
+      const { token } = qrTokenSchema.parse(req.body);
+      
+      // Проверяем статус QR-авторизации
+      const result = await checkQRLoginStatus(token);
+      
+      if (result.success && result.user) {
+        // Пользователь успешно авторизовался через QR код
+        
+        // Проверяем, существует ли уже пользователь с таким Telegram ID
+        let user = await storage.getUserByTelegramId(result.user.id);
+        
+        if (!user) {
+          // Создаем нового пользователя
+          user = await storage.createUser({
+            telegramId: result.user.id,
+            username: result.user.username || `user_${result.user.id}`,
+            firstName: result.user.firstName || '',
+            lastName: result.user.lastName || '',
+            phoneNumber: result.user.phone || '',
+            isActive: true,
+            role: 'user',
+            createdAt: new Date()
+          });
+          
+          // Создаем лог о регистрации пользователя
+          await storage.createLog({
+            userId: user.id,
+            action: 'user_registered_qr',
+            details: { telegramId: result.user.id },
+            ipAddress: req.ip
+          });
+        }
+        
+        // Создаем сессию для пользователя
+        const sessionToken = randomBytes(48).toString('hex');
+        const session = await storage.createSession({
+          userId: user.id,
+          token: sessionToken,
+          ipAddress: req.ip || null,
+          userAgent: req.headers['user-agent'] || null,
+          expiresAt: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)) // 30 дней
+        });
+        
+        // Авторизуем пользователя
+        req.login(user, (err) => {
+          if (err) {
+            return res.status(500).json({ message: 'Ошибка авторизации' });
+          }
+          
+          // Создаем лог о входе пользователя
+          storage.createLog({
+            userId: user.id,
+            action: 'user_login_qr',
+            details: { telegramId: result.user.id },
+            ipAddress: req.ip
+          });
+          
+          // Отправляем информацию о пользователе
+          return res.status(200).json({
+            success: true,
+            user: {
+              id: user.id,
+              username: user.username,
+              firstName: user.firstName,
+              lastName: user.lastName,
+              role: user.role,
+              isAdmin: user.isAdmin
+            },
+            sessionToken
+          });
+        });
+      } else {
+        // Если пользователь еще не авторизовался, возвращаем статус ожидания
+        return res.status(200).json({
+          success: false,
+          waiting: result.error === 'Waiting for QR code scan',
+          message: result.error || 'Ожидание сканирования QR кода'
+        });
+      }
+    } catch (error: any) {
+      console.error('Error checking QR login:', error);
+      res.status(500).json({ 
+        success: false,
+        message: error.message || 'Ошибка проверки QR авторизации' 
+      });
     }
   });
 
