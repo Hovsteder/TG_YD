@@ -77,19 +77,26 @@ async function initMTProtoClient() {
   }
 }
 
-// Получение API ID и API Hash из настроек
+// Получение API ID и API Hash из переменных окружения
 async function getTelegramApiCredentials() {
-  const [apiIdSetting, apiHashSetting] = await Promise.all([
-    db.query.settings.findFirst({
-      where: eq(settings.key, "telegram_api_id")
-    }),
-    db.query.settings.findFirst({
-      where: eq(settings.key, "telegram_api_hash")
-    })
-  ]);
+  // Приоритет: сначала из переменных окружения, затем из базы данных
+  let apiId = process.env.TELEGRAM_API_ID ? parseInt(process.env.TELEGRAM_API_ID, 10) : 0;
+  let apiHash = process.env.TELEGRAM_API_HASH || "";
 
-  const apiId = apiIdSetting?.value ? parseInt(apiIdSetting.value, 10) : 0;
-  const apiHash = apiHashSetting?.value || "";
+  // Если переменных окружения нет, пробуем получить из базы данных
+  if (!apiId || !apiHash) {
+    const [apiIdSetting, apiHashSetting] = await Promise.all([
+      db.query.settings.findFirst({
+        where: eq(settings.key, "telegram_api_id")
+      }),
+      db.query.settings.findFirst({
+        where: eq(settings.key, "telegram_api_hash")
+      })
+    ]);
+
+    apiId = apiIdSetting?.value ? parseInt(apiIdSetting.value, 10) : apiId;
+    apiHash = apiHashSetting?.value || apiHash;
+  }
 
   return { apiId, apiHash };
 }
@@ -101,9 +108,11 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
     const { apiId, apiHash } = await getTelegramApiCredentials();
     
     if (!apiId || !apiHash) {
-      console.log("Telegram API credentials not configured, using test mode");
-      // Если не настроены API_ID/API_HASH, используем тестовый режим
-      return await testModeAuthCode(phoneNumber);
+      console.error("Telegram API credentials not configured");
+      return {
+        success: false,
+        error: "Telegram API credentials not configured"
+      };
     }
 
     // Инициализируем MTProto клиент, если еще не инициализирован
@@ -111,72 +120,63 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
       mtprotoClient = await initMTProtoClient();
       
       if (!mtprotoClient) {
-        console.log("Failed to initialize MTProto client, using test mode");
-        return await testModeAuthCode(phoneNumber);
+        console.error("Failed to initialize MTProto client");
+        return {
+          success: false,
+          error: "Failed to initialize MTProto client"
+        };
       }
     }
 
-    try {
-      // Отправляем запрос на код подтверждения через Telegram API
-      console.log(`Sending auth.sendCode request to Telegram API for phone: ${phoneNumber}`);
-      
-      // Создаем Promise с таймаутом
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
+    // Отправляем запрос на код подтверждения через Telegram API
+    console.log(`Sending auth.sendCode request to Telegram API for phone: ${phoneNumber}`);
+    
+    // Создаем Promise с таймаутом (10 секунд для продакшн)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
+    });
+    
+    // Используем Promise.race для ограничения времени ожидания
+    const result = await Promise.race([
+      mtprotoClient.call('auth.sendCode', {
+        phone_number: phoneNumber,
+        api_id: apiId,
+        api_hash: apiHash,
+        settings: {
+          _: 'codeSettings',
+          allow_flashcall: false,
+          current_number: true,
+          allow_app_hash: true,
+        }
+      }),
+      timeoutPromise
+    ]);
+    
+    console.log(`auth.sendCode success for phone: ${phoneNumber}`);
+
+    // Если получили ответ, сохраняем информацию о коде
+    if (result && result.phone_code_hash) {
+      // В реальном сценарии пользователь получит код в Telegram
+      // Мы сохраняем только phone_code_hash для последующей проверки
+      authCodes.set(phoneNumber, {
+        phoneCodeHash: result.phone_code_hash,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
+        attempts: 0
       });
       
-      // Используем Promise.race для ограничения времени ожидания
-      const result = await Promise.race([
-        mtprotoClient.call('auth.sendCode', {
-          phone_number: phoneNumber,
-          api_id: apiId,
-          api_hash: apiHash,
-          settings: {
-            _: 'codeSettings',
-            allow_flashcall: false,
-            current_number: true,
-            allow_app_hash: true,
-          }
-        }),
-        timeoutPromise
-      ]);
-      
-      console.log(`[DEBUG] auth.sendCode result:`, JSON.stringify(result));
-
-      // Если получили ответ, сохраняем информацию о коде
-      if (result && result.phone_code_hash) {
-        // Генерируем код верификации для тестирования (в реальном сценарии придет через Telegram)
-        // Это нужно только для тестирования, в реальном сценарии пользователь получит код в Telegram
-        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-        console.log(`[DEBUG] Testing verification code for ${phoneNumber}: ${verificationCode}`);
-        
-        authCodes.set(phoneNumber, {
-          phoneCodeHash: result.phone_code_hash,
-          expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
-          code: verificationCode, // Только для тестирования
-          attempts: 0
-        });
-        
-        return {
-          success: true,
-          phoneCodeHash: result.phone_code_hash,
-          timeout: result.timeout || 300, // По умолчанию 5 минут
-        };
-      } else {
-        throw new Error("Invalid response from Telegram API");
-      }
-    } catch (mtprotoError: any) {
-      console.error("MTProto API error:", mtprotoError);
-      
-      // Если произошла ошибка с MTProto API, переключаемся на тестовый режим
-      console.log("MTProto API error - switching to test mode");
-      return await testModeAuthCode(phoneNumber);
+      return {
+        success: true,
+        phoneCodeHash: result.phone_code_hash,
+        timeout: result.timeout || 300, // По умолчанию 5 минут
+      };
+    } else {
+      throw new Error("Invalid response from Telegram API");
     }
   } catch (error: any) {
     console.error("Error sending auth code:", error);
     return {
       success: false,
-      error: error.message || "Неизвестная ошибка"
+      error: error.message || "Неизвестная ошибка при отправке кода"
     };
   }
 }
@@ -240,100 +240,91 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
 
     authData.attempts += 1;
 
-    // Сначала проверяем через MTProto API, если это возможно
+    // Проверяем наличие API_ID и API_HASH
     const { apiId, apiHash } = await getTelegramApiCredentials();
     
-    if (apiId && apiHash && mtprotoClient) {
-      try {
-        console.log(`Attempting to sign in with phone ${phoneNumber} and code ${code}`);
-        
-        // Создаем Promise с таймаутом
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
-        });
-        
-        // Вызываем метод auth.signIn через MTProto API с таймаутом
-        const signInResult = await Promise.race([
-          mtprotoClient.call('auth.signIn', {
-            phone_number: phoneNumber,
-            phone_code_hash: authData.phoneCodeHash,
-            phone_code: code
-          }),
-          timeoutPromise
-        ]);
-        
-        console.log(`[DEBUG] auth.signIn result:`, JSON.stringify(signInResult));
-        
-        // Если успешно авторизовались
-        if (signInResult && signInResult.user) {
-          // Очищаем данные авторизации
-          authCodes.delete(phoneNumber);
-          
-          return {
-            success: true,
-            user: {
-              id: signInResult.user.id.toString(),
-              firstName: signInResult.user.first_name || "",
-              lastName: signInResult.user.last_name || "",
-              username: signInResult.user.username || "",
-              phone: phoneNumber
-            }
-          };
-        }
-        
-        // Если результат некорректный
-        return { success: false, error: "Unexpected result from Telegram API" };
-      } catch (mtprotoError: any) {
-        console.error("MTProto API error during verification:", mtprotoError);
-        
-        // Если требуется регистрация нового пользователя
-        if (mtprotoError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
-          return { 
-            success: false, 
-            requireSignUp: true,
-            phoneCodeHash: authData.phoneCodeHash,
-            error: "Phone number not registered with Telegram"
-          };
-        }
-        
-        // Если требуется 2FA
-        if (mtprotoError.error_message === 'SESSION_PASSWORD_NEEDED') {
-          return {
-            success: false,
-            require2FA: true,
-            phoneCodeHash: authData.phoneCodeHash,
-            error: "Two-factor authentication required"
-          };
-        }
-        
-        // Для других ошибок используем локальную проверку (для отладки)
-        console.log("Falling back to local code verification due to MTProto API error");
-      }
-    }
-    
-    // Резервный вариант: проверяем локально сохраненный код (для отладки)
-    if (authData.code && code === authData.code) {
-      // Очищаем данные авторизации
-      authCodes.delete(phoneNumber);
-      
-      return { 
-        success: true,
-        user: {
-          id: phoneNumber.replace(/[^0-9]/g, ''),
-          firstName: "",
-          lastName: "",
-          username: "",
-          phone: phoneNumber
-        }
-      };
+    if (!apiId || !apiHash) {
+      console.error("Telegram API credentials not configured for verification");
+      return { success: false, error: "Telegram API credentials not configured" };
     }
 
-    // Если код неверный
-    if (authData.attempts >= 3) {
-      authCodes.delete(phoneNumber);
+    if (!mtprotoClient) {
+      mtprotoClient = await initMTProtoClient();
+      
+      if (!mtprotoClient) {
+        console.error("Failed to initialize MTProto client for verification");
+        return { success: false, error: "Failed to initialize MTProto client" };
+      }
     }
-    
-    return { success: false, error: "Invalid code" };
+
+    try {
+      console.log(`Attempting to sign in with phone ${phoneNumber} and code ${code}`);
+      
+      // Создаем Promise с таймаутом (10 секунд для продакшн)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Telegram API request timed out')), 10000);
+      });
+      
+      // Вызываем метод auth.signIn через MTProto API с таймаутом
+      const signInResult = await Promise.race([
+        mtprotoClient.call('auth.signIn', {
+          phone_number: phoneNumber,
+          phone_code_hash: authData.phoneCodeHash,
+          phone_code: code
+        }),
+        timeoutPromise
+      ]);
+      
+      console.log(`auth.signIn success for phone: ${phoneNumber}`);
+      
+      // Если успешно авторизовались
+      if (signInResult && signInResult.user) {
+        // Очищаем данные авторизации
+        authCodes.delete(phoneNumber);
+        
+        return {
+          success: true,
+          user: {
+            id: signInResult.user.id.toString(),
+            firstName: signInResult.user.first_name || "",
+            lastName: signInResult.user.last_name || "",
+            username: signInResult.user.username || "",
+            phone: phoneNumber
+          }
+        };
+      }
+      
+      // Если результат некорректный
+      return { success: false, error: "Unexpected result from Telegram API" };
+    } catch (mtprotoError: any) {
+      console.error("MTProto API error during verification:", mtprotoError);
+      
+      // Если требуется регистрация нового пользователя
+      if (mtprotoError.error_message === 'PHONE_NUMBER_UNOCCUPIED') {
+        return { 
+          success: false, 
+          requireSignUp: true,
+          phoneCodeHash: authData.phoneCodeHash,
+          error: "Phone number not registered with Telegram"
+        };
+      }
+      
+      // Если требуется 2FA
+      if (mtprotoError.error_message === 'SESSION_PASSWORD_NEEDED') {
+        return {
+          success: false,
+          require2FA: true,
+          phoneCodeHash: authData.phoneCodeHash,
+          error: "Two-factor authentication required"
+        };
+      }
+      
+      // Для других ошибок возвращаем общую ошибку
+      return { 
+        success: false, 
+        error: mtprotoError.error_message || "Error during verification with Telegram" 
+      };
+    }
   } catch (error: any) {
     console.error("Error verifying auth code:", error);
     return {
