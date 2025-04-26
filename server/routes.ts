@@ -2,14 +2,34 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats } from "./telegram";
+import { generateVerificationCode, verifyCode, sendVerificationSMS } from "./phone-auth";
 import { z } from "zod";
-import { randomBytes } from "crypto";
+import { randomBytes, scrypt, timingSafeEqual } from "crypto";
+import { promisify } from "util";
 import session from "express-session";
 import { insertUserSchema, insertSessionSchema, messages, sessions, chats } from "@shared/schema";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { db } from "./db";
 import { eq, count } from "drizzle-orm";
+
+// Хелперы для работы с паролями
+const scryptAsync = promisify(scrypt);
+
+// Функция для хеширования пароля
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString("hex");
+  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
+  return `${buf.toString("hex")}.${salt}`;
+}
+
+// Функция для сравнения паролей
+async function comparePasswords(supplied: string, stored: string): Promise<boolean> {
+  const [hashed, salt] = stored.split(".");
+  const hashedBuf = Buffer.from(hashed, "hex");
+  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
+  return timingSafeEqual(hashedBuf, suppliedBuf);
+}
 
 // Определение схем валидации для API запросов
 const telegramAuthSchema = z.object({
@@ -23,6 +43,32 @@ const telegramAuthSchema = z.object({
 
 const twoFACodeSchema = z.object({
   code: z.string().length(5)
+});
+
+// Схема для запроса кода подтверждения по телефону
+const requestPhoneCodeSchema = z.object({
+  phoneNumber: z.string().min(10).max(15) // Формат телефона +1234567890
+});
+
+// Схема для верификации кода подтверждения по телефону
+const verifyPhoneCodeSchema = z.object({
+  phoneNumber: z.string().min(10).max(15),
+  code: z.string().length(6)
+});
+
+// Схема для установки пароля
+const setPasswordSchema = z.object({
+  phoneNumber: z.string().min(10).max(15),
+  password: z.string().min(8).max(100),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+  email: z.string().email().optional()
+});
+
+// Схема для логина по телефону/паролю
+const phoneLoginSchema = z.object({
+  phoneNumber: z.string().min(10).max(15),
+  password: z.string().min(1)
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -293,6 +339,296 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // === НОВАЯ СИСТЕМА АВТОРИЗАЦИИ ПО ТЕЛЕФОНУ ===
+
+  // 1. Запрос кода подтверждения по телефону
+  app.post('/api/auth/phone/request-code', async (req, res) => {
+    try {
+      const { phoneNumber } = requestPhoneCodeSchema.parse(req.body);
+      
+      // Генерируем код подтверждения
+      const code = await generateVerificationCode(phoneNumber);
+      
+      // Отправляем SMS с кодом (в реальном приложении)
+      const smsSent = await sendVerificationSMS(phoneNumber, code);
+      
+      if (!smsSent) {
+        return res.status(500).json({ 
+          success: false,
+          message: 'Не удалось отправить SMS с кодом' 
+        });
+      }
+      
+      // Создаем лог о запросе кода
+      await storage.createLog({
+        userId: null,
+        action: 'phone_code_requested',
+        details: { phoneNumber },
+        ipAddress: req.ip
+      });
+      
+      res.json({
+        success: true,
+        message: 'Код подтверждения отправлен',
+        expiresIn: 600 // 10 минут
+      });
+    } catch (error) {
+      console.error('Phone code request error:', error);
+      res.status(500).json({ message: 'Ошибка отправки кода' });
+    }
+  });
+  
+  // 2. Проверка кода подтверждения по телефону и регистрация пользователя
+  app.post('/api/auth/phone/verify-code', async (req, res) => {
+    try {
+      const { phoneNumber, code } = verifyPhoneCodeSchema.parse(req.body);
+      
+      // Проверка кода
+      const isValid = verifyCode(phoneNumber, code);
+      
+      if (!isValid) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Неверный код или истек срок действия' 
+        });
+      }
+      
+      // Проверяем, существует ли пользователь с таким телефоном
+      let user = await storage.getUserByPhoneNumber(phoneNumber);
+      
+      if (user) {
+        // Пользователь существует, проверяем статус верификации
+        if (user.isVerified) {
+          // Если пользователь верифицирован, значит это вход
+          if (!user.password) {
+            // Если у пользователя нет пароля, нужно его установить
+            return res.json({
+              success: true,
+              requirePassword: true,
+              isNewUser: false,
+              phoneNumber
+            });
+          }
+          
+          // Отмечаем пользователя как верифицированного
+          await storage.updateUser(user.id, {
+            verificationCode: null,
+            verificationCodeExpires: null,
+            lastLogin: new Date()
+          });
+          
+          // Возвращаем информацию для входа с паролем
+          return res.json({
+            success: true,
+            requirePassword: true,
+            isNewUser: false,
+            phoneNumber
+          });
+        } else {
+          // Пользователь существует, но не верифицирован
+          // Отмечаем его как верифицированного
+          user = await storage.updateUser(user.id, {
+            isVerified: true,
+            verificationCode: null,
+            verificationCodeExpires: null
+          }) || user;
+          
+          // Создаем лог о верификации
+          await storage.createLog({
+            userId: user.id,
+            action: 'phone_verified',
+            details: { phoneNumber },
+            ipAddress: req.ip
+          });
+          
+          return res.json({
+            success: true,
+            requirePassword: true,
+            isNewUser: true,
+            phoneNumber
+          });
+        }
+      } else {
+        // Пользователя нет, нужно создать нового
+        user = await storage.createUser({
+          phoneNumber,
+          isVerified: true,
+          verificationCode: null,
+          verificationCodeExpires: null,
+          lastLogin: new Date()
+        });
+        
+        // Создаем лог о регистрации
+        await storage.createLog({
+          userId: user.id,
+          action: 'user_registered',
+          details: { phoneNumber },
+          ipAddress: req.ip
+        });
+        
+        return res.json({
+          success: true,
+          requirePassword: true,
+          isNewUser: true,
+          phoneNumber
+        });
+      }
+    } catch (error) {
+      console.error('Phone code verification error:', error);
+      res.status(500).json({ message: 'Ошибка проверки кода' });
+    }
+  });
+  
+  // 3. Установка пароля после регистрации
+  app.post('/api/auth/phone/set-password', async (req, res) => {
+    try {
+      const { phoneNumber, password, firstName, lastName, email } = setPasswordSchema.parse(req.body);
+      
+      // Проверяем существование пользователя
+      let user = await storage.getUserByPhoneNumber(phoneNumber);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      // Хешируем пароль
+      const hashedPassword = await hashPassword(password);
+      
+      // Обновляем данные пользователя
+      user = await storage.updateUser(user.id, {
+        password: hashedPassword,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        email: email || user.email,
+        lastLogin: new Date()
+      }) || user;
+      
+      // Создаем сессию
+      const sessionToken = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
+      
+      await storage.createSession({
+        userId: user.id,
+        sessionToken,
+        ipAddress: req.ip || null,
+        userAgent: req.headers['user-agent'] || null,
+        expiresAt
+      });
+      
+      // Логируем пользователя
+      req.login(user, (err) => {
+        if (err) {
+          return res.status(500).json({ message: 'Ошибка авторизации' });
+        }
+        
+        // Создаем лог об установке пароля
+        storage.createLog({
+          userId: user.id,
+          action: 'password_set',
+          details: { phoneNumber },
+          ipAddress: req.ip
+        });
+        
+        res.json({
+          success: true,
+          user: {
+            id: user.id,
+            phoneNumber: user.phoneNumber,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            isAdmin: user.isAdmin
+          },
+          sessionToken
+        });
+      });
+    } catch (error) {
+      console.error('Set password error:', error);
+      res.status(500).json({ message: 'Ошибка установки пароля' });
+    }
+  });
+  
+  // 4. Вход по телефону и паролю
+  app.post('/api/auth/phone/login', async (req, res) => {
+    try {
+      const { phoneNumber, password } = phoneLoginSchema.parse(req.body);
+      
+      // Получаем пользователя по телефону
+      const user = await storage.getUserByPhoneNumber(phoneNumber);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      
+      if (!user.password) {
+        return res.status(400).json({ message: 'Необходимо установить пароль' });
+      }
+      
+      // Проверяем пароль
+      const passwordValid = await comparePasswords(password, user.password);
+      
+      if (!passwordValid) {
+        // Создаем лог о неудачной попытке входа
+        await storage.createLog({
+          userId: user.id,
+          action: 'login_failed',
+          details: { phoneNumber, reason: 'invalid_password' },
+          ipAddress: req.ip
+        });
+        
+        return res.status(400).json({ message: 'Неверный пароль' });
+      }
+      
+      // Обновляем данные о последнем входе
+      await storage.updateUser(user.id, {
+        lastLogin: new Date()
+      });
+      
+      // Создаем сессию
+      const sessionToken = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
+      
+      await storage.createSession({
+        userId: user.id,
+        sessionToken,
+        ipAddress: req.ip || null,
+        userAgent: req.headers['user-agent'] || null,
+        expiresAt
+      });
+      
+      // Авторизуем пользователя
+      req.login(user, (err) => {
+        if (err) {
+          return res.status(500).json({ message: 'Ошибка авторизации' });
+        }
+        
+        // Создаем лог о входе
+        storage.createLog({
+          userId: user.id,
+          action: 'user_login',
+          details: { phoneNumber },
+          ipAddress: req.ip
+        });
+        
+        res.json({
+          success: true,
+          user: {
+            id: user.id,
+            phoneNumber: user.phoneNumber,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            isAdmin: user.isAdmin
+          },
+          sessionToken
+        });
+      });
+    } catch (error) {
+      console.error('Phone login error:', error);
+      res.status(500).json({ message: 'Ошибка входа в систему' });
+    }
+  });
+
   // 4. Получение данных пользователя
   app.get('/api/user', isAuthenticated, async (req, res) => {
     const user = req.user as any;
@@ -300,11 +636,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({
       id: user.id,
       telegramId: user.telegramId,
+      phoneNumber: user.phoneNumber,
+      email: user.email,
       username: user.username,
       firstName: user.firstName,
       lastName: user.lastName,
       avatarUrl: user.avatarUrl,
-      isAdmin: user.isAdmin
+      isAdmin: user.isAdmin,
+      isVerified: user.isVerified
     });
   });
 
