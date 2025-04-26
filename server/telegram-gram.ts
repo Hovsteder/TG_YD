@@ -666,29 +666,80 @@ export async function getUserDialogs(limit = 5): Promise<any> {
           
           console.log(`Retrieved ${retrievedDialogs.length} dialogs through alternative method`);
           
+          // Добавляем текущего пользователя в список пользователей
+          try {
+            const me = await currentClient.getMe();
+            if (me) {
+              console.log("Adding current user to contacts list:", me.firstName);
+              users.push({
+                id: me.id?.toString(),
+                first_name: me.firstName || '',
+                last_name: me.lastName || '',
+                username: me.username || '',
+                phone: me.phone || ''
+              });
+            }
+          } catch (e) {
+            console.warn("Failed to get current user:", e);
+          }
+          
+          // Собираем контакты пользователя для расширения списка доступных чатов
+          try {
+            // Используем API метод для получения контактов
+            const contactsResult = await currentClient.invoke(new Api.contacts.GetContacts({}));
+            
+            if (contactsResult && contactsResult.className === 'contacts.Contacts') {
+              const contactUsers = contactsResult.users || [];
+              
+              console.log(`Retrieved ${contactUsers.length} contacts`);
+              
+              for (const contact of contactUsers) {
+                // Добавляем контакт в список пользователей если его еще нет
+                const contactId = contact.id?.toString();
+                if (contactId && !users.some(u => u.id === contactId)) {
+                  users.push({
+                    id: contactId,
+                    first_name: contact.firstName || '',
+                    last_name: contact.lastName || '',
+                    username: contact.username || '',
+                    phone: contact.phone || ''
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("Failed to get contacts:", e);
+          }
+          
           // Собираем информацию из диалогов в безопасном формате
           for (const dialog of retrievedDialogs) {
             const entity = dialog.entity as any;
             if (!entity) continue;
             
-            console.log(`Processing dialog entity:`, entity.className);
+            console.log(`Processing dialog entity:`, entity.className, 'with ID:', entity.id?.toString());
             
             // Создаем объекты пользователей/чатов на основе типа сущности
             if (entity.className === 'User') {
-              users.push({
-                id: entity.id.toString(),
-                first_name: entity.firstName || '',
-                last_name: entity.lastName || '',
-                username: entity.username || '',
-                phone: entity.phone || ''
-              });
+              // Проверяем, нет ли такого пользователя в списке уже
+              if (!users.some(u => u.id === entity.id?.toString())) {
+                users.push({
+                  id: entity.id?.toString(),
+                  first_name: entity.firstName || '',
+                  last_name: entity.lastName || '',
+                  username: entity.username || '',
+                  phone: entity.phone || ''
+                });
+              }
             } else {
-              chats.push({
-                id: entity.id.toString(),
-                title: entity.title || 'Chat',
-                type: entity.className === 'Channel' ? 
-                  (entity.megagroup ? 'supergroup' : 'channel') : 'group'
-              });
+              // Проверяем, нет ли такого чата в списке уже
+              if (!chats.some(c => c.id === entity.id?.toString())) {
+                chats.push({
+                  id: entity.id?.toString(),
+                  title: entity.title || 'Chat',
+                  type: entity.className === 'Channel' ? 
+                    (entity.megagroup ? 'supergroup' : 'channel') : 'group'
+                });
+              }
             }
             
             // Создаем соответствующие объекты диалогов для обоих типов сущностей

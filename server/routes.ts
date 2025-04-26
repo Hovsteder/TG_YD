@@ -772,7 +772,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Обрабатываем данные диалогов и сохраняем в базу
             const savedChats = [];
             
-            for (const dialog of dialogsResult.dialogs) {
+            console.log("Starting to process dialogs to save in database. Total dialogs:", dialogsResult.dialogs?.length || 0);
+            console.log("Dialogs data:", JSON.stringify(dialogsResult.dialogs, null, 2));
+            console.log("Users data:", JSON.stringify(dialogsResult.users, null, 2));
+            
+            // Если диалоги отсутствуют или пустые, но есть пользователи - создаем диалоги напрямую из списка пользователей
+            if ((!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) && dialogsResult.users && dialogsResult.users.length > 0) {
+              console.log("Creating direct chats from users list");
+              
+              for (const userObj of dialogsResult.users) {
+                // Создаем базовый чат для каждого пользователя
+                const userId = userObj.id;
+                const chatId = `user_${userId}`;
+                const chatType = 'private';
+                const chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim() || 'User Chat';
+                const chatPhoto = '';
+                
+                // Создаем безопасную текущую дату
+                const safeDate = new Date();
+                safeDate.setHours(0, 0, 0, 0);
+                
+                try {
+                  // Проверяем существует ли чат
+                  let existingChat = await storage.getChatByIds(user.id, chatId);
+                  
+                  if (existingChat) {
+                    console.log(`Updating existing chat for user ${userId}: ${chatTitle}`);
+                    existingChat = await storage.updateChat(existingChat.id, {
+                      title: chatTitle,
+                      lastMessageDate: safeDate
+                    });
+                    savedChats.push(existingChat);
+                  } else {
+                    console.log(`Creating new chat for user ${userId}: ${chatTitle}`);
+                    const newChat = await storage.createChat({
+                      userId: user.id,
+                      chatId: chatId,
+                      type: chatType,
+                      title: chatTitle,
+                      lastMessageDate: safeDate,
+                      lastMessageText: 'Начало чата',
+                      unreadCount: 0,
+                      photoUrl: chatPhoto
+                    });
+                    savedChats.push(newChat);
+                  }
+                } catch (chatError) {
+                  console.error(`Error saving chat for user ${userId}:`, chatError);
+                }
+              }
+              
+              // Обновляем список чатов и завершаем обработку
+              chats = await storage.listUserChats(user.id);
+              needsUpdate = true;
+              
+              console.log(`Created/updated ${savedChats.length} chats directly from users list`);
+              // Пропускаем стандартную обработку диалогов, блок будет просто пропущен
+            }
+            
+            // Стандартная обработка диалогов
+            for (const dialog of dialogsResult.dialogs || []) {
+              console.log("Processing dialog:", JSON.stringify(dialog, null, 2));
+              
               // Получаем информацию о чате/пользователе
               let chatInfo = null;
               let chatId = '';
@@ -781,7 +842,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               let chatPhoto = '';
               
               // Определяем тип диалога (личный чат, группа, канал)
-              if (dialog.peer._ === 'peerUser') {
+              if (dialog.peer && dialog.peer._ === 'peerUser') {
                 // Находим пользователя по ID
                 const userId = dialog.peer.user_id;
                 const userObj = dialogsResult.users.find((u: any) => u.id === userId);
