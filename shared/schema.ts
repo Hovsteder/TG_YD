@@ -50,6 +50,7 @@ export const chats = pgTable("chats", {
   lastMessageText: text("last_message_text"),
   unreadCount: integer("unread_count").default(0),
   photoUrl: text("photo_url"),
+  accessHash: text("access_hash"), // Добавляем access_hash для работы с Telegram API
   metadata: jsonb("metadata"), // Дополнительные данные о чате
 });
 

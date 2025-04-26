@@ -1064,6 +1064,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   chatType = 'private';
                   chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim();
                   chatPhoto = userObj.photo ? `user_${userId}_photo` : ''; // Заглушка, позже можно добавить загрузку фото
+                  
+                  // Сохраняем access_hash для дальнейшего использования
+                  const accessHash = userObj.access_hash ? String(userObj.access_hash).replace('n', '') : '0';
+                  console.log(`User ${chatTitle} (${userId}) has access_hash: ${accessHash}`);
+                  
+                  // Добавляем в метаданные
+                  dialog.accessHash = accessHash;
                 }
               } else if (dialog.peer._ === 'peerChat') {
                 // Находим групповой чат по ID
@@ -1100,6 +1107,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   chatType = 'channel';
                   chatTitle = channelObj.title || '';
                   chatPhoto = channelObj.photo ? `channel_${channelId}_photo` : '';
+                  
+                  // Сохраняем access_hash для канала
+                  const accessHash = channelObj.access_hash ? String(channelObj.access_hash).replace('n', '') : '0';
+                  console.log(`Channel ${chatTitle} (${channelId}) has access_hash: ${accessHash}`);
+                  
+                  // Добавляем в метаданные
+                  dialog.accessHash = accessHash;
                 }
               }
               
