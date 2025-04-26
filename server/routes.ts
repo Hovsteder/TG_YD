@@ -116,7 +116,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const authData = telegramAuthSchema.parse(req.body);
       
       // Проверка подписи данных от Telegram
-      if (!validateTelegramAuth(authData)) {
+      const isValid = await validateTelegramAuth(authData);
+      if (!isValid) {
         return res.status(400).json({ message: 'Недействительные данные авторизации' });
       }
 

@@ -2,13 +2,45 @@ import { Bot, session, GrammyError, HttpError } from "grammy";
 import { storage } from "./storage";
 import crypto from "crypto";
 
-// Проверка наличия токена Telegram API
-if (!process.env.TELEGRAM_BOT_TOKEN) {
-  throw new Error("TELEGRAM_BOT_TOKEN must be set");
+// Функция получения токена бота из настроек
+async function getBotToken(): Promise<string> {
+  try {
+    // Пытаемся получить токен из базы данных (настройки)
+    const storedToken = await storage.getSettingValue("telegram_bot_token");
+    
+    if (storedToken) {
+      return storedToken;
+    }
+    
+    // Если токен не найден в базе данных, используем переменную окружения
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      // Сохраняем токен в базу данных для будущего использования
+      await storage.upsertSetting(
+        "telegram_bot_token", 
+        process.env.TELEGRAM_BOT_TOKEN, 
+        "Токен Telegram бота для отправки сообщений"
+      );
+      return process.env.TELEGRAM_BOT_TOKEN;
+    }
+    
+    throw new Error("TELEGRAM_BOT_TOKEN not found in settings or environment variables");
+  } catch (error) {
+    console.error("Error getting bot token:", error);
+    throw error;
+  }
 }
 
-// Создание экземпляра бота
-const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
+// Создание экземпляра бота с отложенной инициализацией
+let botInstance: Bot | null = null;
+
+// Функция для получения экземпляра бота
+async function getBotInstance(): Promise<Bot> {
+  if (!botInstance) {
+    const token = await getBotToken();
+    botInstance = new Bot(token);
+  }
+  return botInstance;
+}
 
 // Хранилище для временных 2FA кодов
 type TwoFAData = {
@@ -29,8 +61,11 @@ export async function generateTwoFACode(telegramId: string): Promise<string> {
   twoFAStore[telegramId] = { code, expiresAt, attempts: 0 };
   
   try {
+    // Получаем экземпляр бота
+    const botInstance = await getBotInstance();
+    
     // Отправка кода пользователю через Telegram
-    await bot.api.sendMessage(telegramId, `Ваш код подтверждения: ${code}\nДействителен в течение 5 минут.`);
+    await botInstance.api.sendMessage(telegramId, `Ваш код подтверждения: ${code}\nДействителен в течение 5 минут.`);
     
     // Обновление кода в базе данных
     const user = await storage.getUserByTelegramId(telegramId);
@@ -84,7 +119,8 @@ export function verifyTwoFACode(telegramId: string, code: string): boolean {
 // Получение данных пользователя Telegram
 export async function getTelegramUserData(telegramId: string) {
   try {
-    const user = await bot.api.getChat(telegramId);
+    const botInstance = await getBot();
+    const user = await botInstance.api.getChat(telegramId);
     return user;
   } catch (error) {
     console.error("Error getting user data:", error);
@@ -108,11 +144,11 @@ export async function getUserChats(telegramId: string, limit = 5) {
 }
 
 // Проверка валидности данных Telegram авторизации
-export function validateTelegramAuth(authData: any): boolean {
+export async function validateTelegramAuth(authData: any): Promise<boolean> {
   const { id, first_name, username, photo_url, auth_date, hash } = authData;
   
   // Проверяем наличие обязательных полей
-  if (!id || !auth_date || !hash || !process.env.TELEGRAM_BOT_TOKEN) {
+  if (!id || !auth_date || !hash) {
     return false;
   }
   
@@ -122,27 +158,35 @@ export function validateTelegramAuth(authData: any): boolean {
     return false;
   }
   
-  // Собираем строку данных для проверки хеша
-  const data_check_arr = [];
-  for (const key in authData) {
-    if (key !== 'hash') {
-      data_check_arr.push(`${key}=${authData[key]}`);
+  try {
+    // Получаем токен бота из настроек
+    const botToken = await getBotToken();
+    
+    // Собираем строку данных для проверки хеша
+    const data_check_arr = [];
+    for (const key in authData) {
+      if (key !== 'hash') {
+        data_check_arr.push(`${key}=${authData[key]}`);
+      }
     }
+    data_check_arr.sort();
+    const data_check_string = data_check_arr.join('\n');
+    
+    // Создаем секретный ключ на основе токена бота
+    const secret = crypto.createHash('sha256')
+      .update(botToken)
+      .digest();
+    
+    // Вычисляем хеш и сравниваем с полученным
+    const hash_check = crypto.createHmac('sha256', secret)
+      .update(data_check_string)
+      .digest('hex');
+    
+    return hash === hash_check;
+  } catch (error) {
+    console.error("Error validating Telegram auth:", error);
+    return false;
   }
-  data_check_arr.sort();
-  const data_check_string = data_check_arr.join('\n');
-  
-  // Создаем секретный ключ на основе токена бота
-  const secret = crypto.createHash('sha256')
-    .update(process.env.TELEGRAM_BOT_TOKEN)
-    .digest();
-  
-  // Вычисляем хеш и сравниваем с полученным
-  const hash_check = crypto.createHmac('sha256', secret)
-    .update(data_check_string)
-    .digest('hex');
-  
-  return hash === hash_check;
 }
 
 // Отправка уведомления администратору о новом пользователе
@@ -173,8 +217,9 @@ export async function sendNewUserNotification(
       + `🕒 Время: ${new Date().toLocaleString('ru-RU')}\n\n`
       + `Всего пользователей: ${await storage.countUsers()}`;
     
-    // Отправляем сообщение администратору
-    await bot.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
+    // Получаем экземпляр бота и отправляем сообщение
+    const botInstance = await getBot();
+    await botInstance.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
     
     // Логируем отправку уведомления
     await storage.createLog({
@@ -204,7 +249,10 @@ export async function sendTestNotification(adminChatId: string): Promise<boolean
       + `Если вы получили это сообщение, значит настройки уведомлений работают корректно.\n\n`
       + `🕒 Время отправки: ${new Date().toLocaleString('ru-RU')}`;
     
-    await bot.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
+    // Получаем экземпляр бота и отправляем сообщение
+    const botInstance = await getBot();
+    await botInstance.api.sendMessage(adminChatId, message, { parse_mode: "Markdown" });
+    
     return true;
   } catch (error) {
     console.error("Error sending test notification:", error);
@@ -217,4 +265,17 @@ export async function sendTestNotification(adminChatId: string): Promise<boolean
   }
 }
 
-export default bot;
+// Обратная совместимость, но использовать не рекомендуется
+// В будущем этот экспорт будет удален
+export default {
+  api: {
+    sendMessage: async (chatId: string, text: string, options?: any) => {
+      const botInstance = await getBot();
+      return botInstance.api.sendMessage(chatId, text, options);
+    },
+    getChat: async (chatId: string) => {
+      const botInstance = await getBot();
+      return botInstance.api.getChat(chatId);
+    }
+  }
+};
