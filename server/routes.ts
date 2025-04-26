@@ -1048,8 +1048,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Определяем тип диалога (личный чат, группа, канал)
               if (dialog.peer && dialog.peer._ === 'peerUser') {
                 // Находим пользователя по ID
-                const userId = dialog.peer.user_id;
-                const userObj = dialogsResult.users.find((u: any) => u.id === userId);
+                const userIdRaw = dialog.peer.user_id;
+                // Обеспечиваем правильное преобразование к строке для BigInt и Integer типов
+                const userId = String(userIdRaw).replace('n', ''); // Убираем 'n' в конце BigInt строк
+                console.log(`Processing user dialog with ID: ${userId} (original type: ${typeof userIdRaw})`);
+                
+                // Ищем пользователя по ID с разными вариантами сравнения
+                const userObj = dialogsResult.users.find((u: any) => {
+                  const uId = String(u.id).replace('n', '');
+                  return uId === userId;
+                });
                 
                 if (userObj) {
                   chatId = `user_${userId}`;
@@ -1059,8 +1067,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
               } else if (dialog.peer._ === 'peerChat') {
                 // Находим групповой чат по ID
-                const chatPeerId = dialog.peer.chat_id;
-                const chatObj = dialogsResult.chats.find((c: any) => c.id === chatPeerId);
+                const chatPeerIdRaw = dialog.peer.chat_id;
+                const chatPeerId = String(chatPeerIdRaw).replace('n', '');
+                console.log(`Processing chat dialog with ID: ${chatPeerId} (original type: ${typeof chatPeerIdRaw})`);
+                
+                // Ищем чат по ID с разными вариантами сравнения
+                const chatObj = dialogsResult.chats.find((c: any) => {
+                  const cId = String(c.id).replace('n', '');
+                  return cId === chatPeerId;
+                });
                 
                 if (chatObj) {
                   chatId = `chat_${chatPeerId}`;
@@ -1070,8 +1085,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
               } else if (dialog.peer._ === 'peerChannel') {
                 // Находим канал по ID
-                const channelId = dialog.peer.channel_id;
-                const channelObj = dialogsResult.chats.find((c: any) => c.id === channelId);
+                const channelIdRaw = dialog.peer.channel_id;
+                const channelId = String(channelIdRaw).replace('n', '');
+                console.log(`Processing channel dialog with ID: ${channelId} (original type: ${typeof channelIdRaw})`);
+                
+                // Ищем канал по ID с разными вариантами сравнения
+                const channelObj = dialogsResult.chats.find((c: any) => {
+                  const cId = String(c.id).replace('n', '');
+                  return cId === channelId;
+                });
                 
                 if (channelObj) {
                   chatId = `channel_${channelId}`;
