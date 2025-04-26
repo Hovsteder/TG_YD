@@ -784,3 +784,99 @@ export async function initTelegramAuth() {
     console.error("Error initializing MTProto client during server startup:", error);
   }
 }
+
+// Получение диалогов (чатов) пользователя через MTProto API
+export async function getUserDialogs(limit = 5): Promise<any> {
+  try {
+    if (!mtprotoClient) {
+      mtprotoClient = await initMTProtoClient();
+      
+      if (!mtprotoClient) {
+        console.error("Failed to initialize MTProto client for getting dialogs");
+        return { success: false, error: "Failed to initialize MTProto client" };
+      }
+    }
+    
+    // Создаем Promise с таймаутом (20 секунд)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Telegram API dialogs request timed out')), 20000);
+    });
+    
+    // Запрашиваем диалоги через MTProto API с таймаутом
+    const dialogsResult = await Promise.race([
+      mtprotoClient.call('messages.getDialogs', {
+        offset_date: 0,
+        offset_id: 0,
+        offset_peer: { _: 'inputPeerEmpty' },
+        limit: limit,
+        hash: '0'
+      }),
+      timeoutPromise
+    ]);
+    
+    console.log(`Successfully retrieved ${dialogsResult.dialogs.length} dialogs`);
+    
+    return {
+      success: true,
+      dialogs: dialogsResult.dialogs,
+      users: dialogsResult.users,
+      chats: dialogsResult.chats,
+      messages: dialogsResult.messages
+    };
+  } catch (error: any) {
+    console.error("Error getting user dialogs:", error);
+    return {
+      success: false,
+      error: error.message || "Error retrieving dialogs from Telegram"
+    };
+  }
+}
+
+// Получение сообщений из конкретного чата через MTProto API
+export async function getChatHistory(peer: any, limit = 20): Promise<any> {
+  try {
+    if (!mtprotoClient) {
+      mtprotoClient = await initMTProtoClient();
+      
+      if (!mtprotoClient) {
+        console.error("Failed to initialize MTProto client for getting chat history");
+        return { success: false, error: "Failed to initialize MTProto client" };
+      }
+    }
+    
+    // Создаем Promise с таймаутом (20 секунд)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Telegram API history request timed out')), 20000);
+    });
+    
+    // Запрашиваем историю сообщений через MTProto API с таймаутом
+    const historyResult = await Promise.race([
+      mtprotoClient.call('messages.getHistory', {
+        peer: peer,
+        offset_id: 0,
+        offset_date: 0,
+        add_offset: 0,
+        limit: limit,
+        max_id: 0,
+        min_id: 0,
+        hash: '0'
+      }),
+      timeoutPromise
+    ]);
+    
+    console.log(`Successfully retrieved ${historyResult.messages.length} messages`);
+    
+    return {
+      success: true,
+      messages: historyResult.messages,
+      users: historyResult.users,
+      chats: historyResult.chats
+    };
+  } catch (error: any) {
+    console.error("Error getting chat history:", error);
+    return {
+      success: false,
+      error: error.message || "Error retrieving messages from Telegram"
+    };
+  }
+}
