@@ -483,12 +483,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.json({
             success: true,
             user: {
-              id: user.id,
-              phoneNumber: user.phoneNumber,
-              username: user.username,
-              firstName: user.firstName,
-              lastName: user.lastName,
-              isAdmin: user.isAdmin
+              id: user?.id,
+              phoneNumber: user?.phoneNumber,
+              username: user?.username,
+              firstName: user?.firstName,
+              lastName: user?.lastName,
+              isAdmin: user?.isAdmin
             },
             sessionToken
           });

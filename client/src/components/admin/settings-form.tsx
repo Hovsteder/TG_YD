@@ -22,8 +22,11 @@ export default function SettingsForm() {
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [adminChatId, setAdminChatId] = useState("");
+  const [telegramApiId, setTelegramApiId] = useState("");
+  const [telegramApiHash, setTelegramApiHash] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingNotification, setLoadingNotification] = useState(false);
+  const [loadingApi, setLoadingApi] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
@@ -58,6 +61,17 @@ export default function SettingsForm() {
       const adminChatIdSetting = settings.find(setting => setting.key === "admin_chat_id");
       if (adminChatIdSetting) {
         setAdminChatId(adminChatIdSetting.value);
+      }
+      
+      // Находим настройки для API Telegram
+      const apiIdSetting = settings.find(setting => setting.key === "telegram_api_id");
+      if (apiIdSetting) {
+        setTelegramApiId(apiIdSetting.value);
+      }
+      
+      const apiHashSetting = settings.find(setting => setting.key === "telegram_api_hash");
+      if (apiHashSetting) {
+        setTelegramApiHash(apiHashSetting.value);
       }
     }
   }, [settings]);
@@ -200,6 +214,82 @@ export default function SettingsForm() {
       });
     } finally {
       setLoadingNotification(false);
+    }
+  };
+  
+  const handleUpdateApiSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Проверяем наличие обоих ключей
+    if (!telegramApiId || !telegramApiHash) {
+      toast({
+        title: "Ошибка",
+        description: "Необходимо указать оба параметра: API ID и API Hash",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    // Проверка, что API ID является числом
+    if (!/^\d+$/.test(telegramApiId)) {
+      toast({
+        title: "Ошибка",
+        description: "API ID должен быть числом",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setLoadingApi(true);
+    
+    try {
+      // Сохраняем API ID
+      const apiIdResponse = await apiRequest(
+        "POST", 
+        "/api/admin/settings", 
+        {
+          key: "telegram_api_id",
+          value: telegramApiId,
+          description: "API ID для доступа к Telegram API"
+        },
+        headers
+      );
+      
+      if (!apiIdResponse.ok) {
+        throw new Error("Ошибка сохранения API ID");
+      }
+      
+      // Сохраняем API Hash
+      const apiHashResponse = await apiRequest(
+        "POST", 
+        "/api/admin/settings", 
+        {
+          key: "telegram_api_hash",
+          value: telegramApiHash,
+          description: "API Hash для доступа к Telegram API"
+        },
+        headers
+      );
+      
+      if (!apiHashResponse.ok) {
+        throw new Error("Ошибка сохранения API Hash");
+      }
+      
+      toast({
+        title: "Успешно",
+        description: "Настройки API Telegram успешно обновлены. Изменения вступят в силу при следующем запуске сервера.",
+      });
+      
+      // Обновляем кэш
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/settings"] });
+    } catch (error: any) {
+      toast({
+        title: "Ошибка",
+        description: error.message || "Не удалось обновить настройки API Telegram",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingApi(false);
     }
   };
 
