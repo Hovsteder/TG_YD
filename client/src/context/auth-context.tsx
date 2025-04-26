@@ -27,6 +27,7 @@ interface AuthContextProps {
   login: (telegramData: any) => Promise<void>;
   verify2FA: (telegramId: string, code: string) => Promise<boolean>;
   resend2FACode: (telegramId: string) => Promise<boolean>;
+  linkTelegramToPhone: (telegramData: any, phoneNumber: string) => Promise<boolean>;
   // Авторизация по телефону
   requestPhoneCode: (phoneNumber: string) => Promise<boolean>;
   verifyPhoneCode: (phoneNumber: string, code: string) => Promise<{ success: boolean; requirePassword: boolean; isNewUser: boolean }>;
@@ -47,6 +48,7 @@ const AuthContext = createContext<AuthContextProps>({
   login: async () => {},
   verify2FA: async () => false,
   resend2FACode: async () => false,
+  linkTelegramToPhone: async () => false,
   // Phone
   requestPhoneCode: async () => false,
   verifyPhoneCode: async () => ({ success: false, requirePassword: false, isNewUser: false }),
@@ -181,6 +183,43 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         variant: "destructive",
         title: "Ошибка отправки кода",
         description: "Не удалось отправить новый код",
+      });
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Связывание Telegram ID с номером телефона
+  const linkTelegramToPhone = async (telegramData: any, phone: string) => {
+    try {
+      setLoading(true);
+      const response = await apiRequest("POST", "/api/auth/telegram/link", {
+        telegramId: telegramData.id,
+        phoneNumber: phone,
+        firstName: telegramData.first_name,
+        lastName: telegramData.last_name,
+        username: telegramData.username,
+        photoUrl: telegramData.photo_url
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        setTelegramId(telegramData.id);
+        toast({
+          title: "Telegram аккаунт связан",
+          description: "Теперь вы будете получать коды подтверждения напрямую в Telegram"
+        });
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("Link Telegram error:", error);
+      toast({
+        variant: "destructive",
+        title: "Ошибка связывания аккаунта",
+        description: "Не удалось связать ваш Telegram аккаунт с номером телефона"
       });
       return false;
     } finally {
@@ -393,6 +432,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         login,
         verify2FA,
         resend2FACode,
+        linkTelegramToPhone,
         // Phone
         requestPhoneCode,
         verifyPhoneCode,

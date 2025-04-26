@@ -22,7 +22,7 @@ enum AuthStep {
 
 export default function LoginPage() {
   // Хуки и состояния
-  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading } = useAuth();
+  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, linkTelegramToPhone, isAuthenticated, loading } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -85,21 +85,17 @@ export default function LoginPage() {
   };
 
   // Обработчик для авторизации через Telegram
-  const handleTelegramAuth = (result: any) => {
+  const handleTelegramAuth = async (result: any) => {
     // При успешной авторизации через Telegram Widget, привязываем ID к номеру телефона
     if (result && result.id) {
-      toast({
-        title: "Telegram аккаунт связан",
-        description: "Теперь вы будете получать коды подтверждения в Telegram",
-      });
+      // Отправляем запрос на сервер для связывания Telegram ID с номером телефона
+      const success = await linkTelegramToPhone(result, phoneNumber);
       
-      // В реальном приложении здесь нужно отправить запрос на сервер, 
-      // чтобы связать Telegram ID с номером телефона
-      console.log("Linking Telegram ID to phone number:", result.id, phoneNumber);
-      
-      // Продолжаем процесс верификации кода
-      if (verificationCode.length === 6) {
-        handleVerifyCode();
+      if (success) {
+        // Продолжаем процесс верификации кода
+        if (verificationCode.length === 6) {
+          handleVerifyCode();
+        }
       }
     }
   };
