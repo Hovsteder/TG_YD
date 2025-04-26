@@ -1463,7 +1463,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Получаем свежие сообщения через MTProto API при каждом открытии чата
       // или если сообщений мало, или если запрошено принудительное обновление
-      // Всегда обновляем сообщения при запросе
+      if (messages.length < 5 || forceUpdate) {
+        console.log(`Обновляем сообщения для чата ${chatId}, forceUpdate=${forceUpdate}`);
         try {
           // Получаем историю чата через MTProto API
           const { getChatHistory } = await import('./telegram-gram');
@@ -1580,6 +1581,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error('Error fetching messages from Telegram:', error);
           // Продолжаем выполнение и возвращаем имеющиеся сообщения
         }
+      }
       
       // Создаем лог о запросе сообщений
       await storage.createLog({

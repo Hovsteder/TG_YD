@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/auth-context";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Chat, Message } from "../../../shared/schema";
 import { Separator } from "@/components/ui/separator";
@@ -62,6 +62,30 @@ export default function ChatsPage() {
     }, 100); // Небольшая задержка, чтобы query hook успел обновиться с новым selectedChat
   };
 
+  // Принудительное обновление сообщений с передачей параметра forceUpdate
+  const handleRefreshMessages = async () => {
+    try {
+      if (!selectedChat) return;
+      
+      // Передаем параметр forceUpdate=true
+      const res = await apiRequest("GET", `/api/chats/${selectedChat.chatId}/messages?update=true&forceUpdate=true`);
+      const refreshedMessages = await res.json();
+      
+      // Обновляем кэш запроса вручную
+      queryClient.setQueryData(["/api/chats", selectedChat.id, "messages"], refreshedMessages);
+      
+      // Также можно вызвать refetch для обновления интерфейса
+      refetchMessages();
+    } catch (error) {
+      console.error("Error refreshing messages:", error);
+      toast({
+        title: t("error_refreshing_messages"),
+        description: t("error_refreshing_messages_description"),
+        variant: "destructive",
+      });
+    }
+  };
+  
   // Обработчик отправки сообщения (заглушка)
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
