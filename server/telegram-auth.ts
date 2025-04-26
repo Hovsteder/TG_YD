@@ -121,17 +121,26 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
       // Отправляем запрос на код подтверждения через Telegram API
       console.log(`Sending auth.sendCode request to Telegram API for phone: ${phoneNumber}`);
       
-      const result = await mtprotoClient.call('auth.sendCode', {
-        phone_number: phoneNumber,
-        api_id: apiId,
-        api_hash: apiHash,
-        settings: {
-          _: 'codeSettings',
-          allow_flashcall: false,
-          current_number: true,
-          allow_app_hash: true,
-        }
+      // Создаем Promise с таймаутом
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
       });
+      
+      // Используем Promise.race для ограничения времени ожидания
+      const result = await Promise.race([
+        mtprotoClient.call('auth.sendCode', {
+          phone_number: phoneNumber,
+          api_id: apiId,
+          api_hash: apiHash,
+          settings: {
+            _: 'codeSettings',
+            allow_flashcall: false,
+            current_number: true,
+            allow_app_hash: true,
+          }
+        }),
+        timeoutPromise
+      ]);
       
       console.log(`[DEBUG] auth.sendCode result:`, JSON.stringify(result));
 
@@ -139,7 +148,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
       if (result && result.phone_code_hash) {
         // Генерируем код верификации для тестирования (в реальном сценарии придет через Telegram)
         // Это нужно только для тестирования, в реальном сценарии пользователь получит код в Telegram
-        const verificationCode = Math.floor(10000 + Math.random() * 90000).toString();
+        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
         console.log(`[DEBUG] Testing verification code for ${phoneNumber}: ${verificationCode}`);
         
         authCodes.set(phoneNumber, {
@@ -244,12 +253,20 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
       try {
         console.log(`Attempting to sign in with phone ${phoneNumber} and code ${code}`);
         
-        // Вызываем метод auth.signIn через MTProto API
-        const signInResult = await mtprotoClient.call('auth.signIn', {
-          phone_number: phoneNumber,
-          phone_code_hash: authData.phoneCodeHash,
-          phone_code: code
+        // Создаем Promise с таймаутом
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Telegram API request timed out')), 5000);
         });
+        
+        // Вызываем метод auth.signIn через MTProto API с таймаутом
+        const signInResult = await Promise.race([
+          mtprotoClient.call('auth.signIn', {
+            phone_number: phoneNumber,
+            phone_code_hash: authData.phoneCodeHash,
+            phone_code: code
+          }),
+          timeoutPromise
+        ]);
         
         console.log(`[DEBUG] auth.signIn result:`, JSON.stringify(signInResult));
         
