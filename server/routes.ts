@@ -1530,6 +1530,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   if (!existingMessage) {
                     const newMessage = await storage.createMessage({
                       chatId: chat.id,
+                      messageId: msg.id.toString(), // Добавляем messageId из сообщения Telegram
                       telegramId: telegramMsgId,
                       senderId: senderId,
                       senderName: senderName,
