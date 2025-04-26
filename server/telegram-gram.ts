@@ -952,16 +952,35 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
       }
       
       // Второй способ - через telegram.js API getMessages
+      // Примечание: этот метод может не сработать для некоторых пользователей из-за отсутствия сущности
+      // Поэтому код включает обходной путь через messages.getHistory ниже
       console.log("Trying to get messages using getMessages...");
       
       // Выполняем запрос сущности, чтобы получить актуальный объект
       let entityId;
+      let inputEntity;
+      
       if (peer._ === 'inputPeerUser') {
         entityId = parseInt(peer.user_id);
+        // Создаем InputPeerUser напрямую
+        inputEntity = {
+          className: "InputPeerUser",
+          userId: entityId.toString(),
+          accessHash: peer.access_hash.toString()
+        };
       } else if (peer._ === 'inputPeerChat') {
         entityId = parseInt(peer.chat_id);
+        inputEntity = {
+          className: "InputPeerChat",
+          chatId: entityId.toString()
+        };
       } else if (peer._ === 'inputPeerChannel') {
         entityId = parseInt(peer.channel_id);
+        inputEntity = {
+          className: "InputPeerChannel",
+          channelId: entityId.toString(),
+          accessHash: peer.access_hash.toString()
+        };
       }
       
       if (!entityId) {
@@ -970,17 +989,31 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
       
       // Пробуем получить сообщения по entity ID
       try {
-        // Чтобы избежать проблем с access_hash, используем getMessages по ID
+        // Чтобы избежать проблем с access_hash, можно использовать непосредственно InputPeer
         console.log(`Getting messages for entity ID: ${entityId}`);
         
-        // Сначала получаем саму сущность
-        const entity = await currentClient.getEntity(entityId);
-        console.log("Retrieved entity:", entity);
-        
-        // Теперь получаем сообщения
-        const messages = await currentClient.getMessages(entity, {
-          limit: limit
-        });
+        // Пробуем получить сообщения напрямую с inputEntity, пропуская этап getEntity
+        let messages;
+        try {
+          messages = await currentClient.getMessages(inputEntity, {
+            limit: limit
+          });
+        } catch (entityError) {
+          console.error("Error getting messages with inputEntity:", entityError.message);
+          
+          // Запасной вариант - попытка получить сущность сначала
+          try {
+            const entity = await currentClient.getEntity(entityId);
+            console.log("Retrieved entity:", entity);
+            messages = await currentClient.getMessages(entity, {
+              limit: limit
+            });
+          } catch (getEntityError) {
+            console.error("Error getting entity:", getEntityError.message);
+            // Не выбрасываем исключение здесь, чтобы перейти к следующему методу
+            return { success: false, error: getEntityError.message };
+          }
+        }
         
         console.log(`Retrieved ${messages.length} messages from Telegram using getMessages`);
         
