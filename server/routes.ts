@@ -1218,9 +1218,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(400).json({ message: 'Ошибка обновления токена бота' });
         }
         
+        // Используем userId из токена администратора или дефолтное значение 1
+        const userId = req.user ? (req.user as any).id : 1;
+        
         // Создаем лог об обновлении токена
         await storage.createLog({
-          userId: (req.user as any).id,
+          userId: userId,
           action: 'bot_token_updated',
           details: { success },
           ipAddress: req.ip
@@ -1232,8 +1235,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Для всех остальных настроек используем обычный метод
       const setting = await storage.upsertSetting(key, value, description);
       
+      // Используем userId из токена администратора или дефолтное значение 1
+      const userId = req.user ? (req.user as any).id : 1;
+      
       await storage.createLog({
-        userId: (req.user as any).id,
+        userId: userId,
         action: 'setting_update',
         details: { key, value },
         ipAddress: req.ip
@@ -1269,9 +1275,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const success = await sendTestNotification(adminChatId);
       
       if (success) {
+        // Используем userId из токена администратора или дефолтное значение 1
+        const userId = req.user ? (req.user as any).id : 1;
+        
         // Создаем лог об отправке тестового уведомления
         await storage.createLog({
-          userId: (req.user as any).id,
+          userId: userId,
           action: 'test_notification_sent',
           details: { adminChatId },
           ipAddress: req.ip
