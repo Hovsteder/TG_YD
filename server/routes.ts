@@ -745,7 +745,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (chats.length < 5) {
         try {
           // Получаем чаты через MTProto API
-          const { getUserDialogs } = require('./telegram-auth');
+          const { getUserDialogs } = await import('./telegram-gram');
           const dialogsResult = await getUserDialogs(5);
           
           if (dialogsResult.success) {
@@ -892,7 +892,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (messages.length < limit) {
         try {
           // Получаем историю чата через MTProto API
-          const { getChatHistory } = require('./telegram-auth');
+          const { getChatHistory } = await import('./telegram-gram');
           
           // Формируем правильный peer объект на основе структуры chatId
           let peer = null;
