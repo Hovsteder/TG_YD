@@ -16,10 +16,18 @@ export async function apiRequest(
   const defaultHeaders: Record<string, string> = data 
     ? { "Content-Type": "application/json" } 
     : {};
+  
+  // Добавляем токен авторизации из localStorage, если он существует
+  const sessionToken = localStorage.getItem("sessionToken");
+  if (sessionToken) {
+    defaultHeaders["Authorization"] = `Bearer ${sessionToken}`;
+  }
     
   const requestHeaders = headers 
     ? { ...defaultHeaders, ...headers } 
     : defaultHeaders;
+    
+  console.log("API Request:", { method, url, headers: requestHeaders });
     
   const res = await fetch(url, {
     method,

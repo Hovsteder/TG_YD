@@ -125,10 +125,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Middleware для проверки аутентификации
-  const isAuthenticated = (req: Request, res: Response, next: any) => {
+  const isAuthenticated = async (req: Request, res: Response, next: any) => {
+    // Проверка стандартной аутентификации
     if (req.isAuthenticated()) {
       return next();
     }
+    
+    // Проверка авторизации через токен сессии
+    const sessionToken = req.headers.authorization?.startsWith('Bearer ') 
+      ? req.headers.authorization.substring(7)
+      : null;
+      
+    if (sessionToken) {
+      try {
+        // Получаем сессию по токену
+        const session = await storage.getSession(sessionToken);
+        
+        if (session && session.expiresAt && new Date() < session.expiresAt) {
+          // Получаем пользователя по ID сессии
+          const user = await storage.getUser(session.userId);
+          
+          if (user) {
+            // Авторизуем пользователя
+            req.login(user, (err) => {
+              if (err) {
+                console.error("Error logging in user via token:", err);
+                return res.status(401).json({ message: 'Не авторизован' });
+              }
+              // Продолжаем выполнение запроса
+              return next();
+            });
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Session authentication error:", error);
+      }
+    }
+    
+    // Если все проверки не прошли, возвращаем ошибку
     res.status(401).json({ message: 'Не авторизован' });
   };
 
