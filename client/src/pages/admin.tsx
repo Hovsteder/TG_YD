@@ -3,7 +3,6 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import StatsCards from "@/components/admin/stats-cards";
 import UserTable from "@/components/admin/user-table";
-import ChatsTable from "@/components/admin/chats-table";
 import SessionsTable from "@/components/admin/sessions-table";
 import PasswordForm from "@/components/admin/password-form";
 import SettingsForm from "@/components/admin/settings-form";
@@ -61,12 +60,7 @@ export default function AdminPage() {
     meta: { headers }
   });
 
-  // Получение списка чатов с авторизацией
-  const { data: chatsData, isLoading: chatsLoading } = useQuery({
-    queryKey: ["/api/admin/chats"],
-    enabled: !!adminData && activeTab === "chats",
-    meta: { headers }
-  });
+
 
   // Получение списка сессий с авторизацией
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
@@ -131,12 +125,6 @@ export default function AdminPage() {
               Пользователи
             </button>
             <button 
-              onClick={() => setActiveTab("chats")}
-              className={`px-6 py-3 ${activeTab === "chats" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
-            >
-              Чаты
-            </button>
-            <button 
               onClick={() => setActiveTab("sessions")}
               className={`px-6 py-3 ${activeTab === "sessions" ? "text-telegram-blue border-b-2 border-telegram-blue font-medium" : "text-neutral-gray hover:text-neutral-dark"}`}
             >
@@ -168,12 +156,7 @@ export default function AdminPage() {
           />
         )}
         
-        {activeTab === "chats" && (
-          <ChatsTable
-            chatsData={chatsData as any}
-            loading={chatsLoading}
-          />
-        )}
+
         
         {activeTab === "sessions" && (
           <SessionsTable

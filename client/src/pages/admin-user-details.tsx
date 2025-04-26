@@ -348,13 +348,6 @@ export default function AdminUserDetailsPage() {
                               {chat.lastMessageText || "Нет сообщений"}
                             </p>
                           </div>
-                          {chat.unreadCount > 0 && (
-                            <div className="ml-auto">
-                              <span className="px-2 py-1 bg-telegram-blue text-white text-xs rounded-full">
-                                {chat.unreadCount}
-                              </span>
-                            </div>
-                          )}
                         </div>
                       ))}
                     </div>
