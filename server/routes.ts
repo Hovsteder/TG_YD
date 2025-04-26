@@ -1,9 +1,7 @@
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
-import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats } from "./telegram";
+import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode } from "./telegram";
 import { generateVerificationCode, verifyCode, sendVerificationTelegram } from "./phone-auth";
-// import { sendAuthCode, verifyAuthCode, signUpNewUser, check2FAPassword, logoutTelegramUser, initTelegramAuth } from "./telegram-auth";
 import { 
   sendAuthCode, 
   verifyAuthCode, 
@@ -13,19 +11,39 @@ import {
   initTelegramAuth,
   createQRLoginCode,
   checkQRLoginStatus,
-  getChatHistory
+  getChatHistory,
+  cancelQrSession,
+  getUserDialogs
 } from "./telegram-gram";
 import { z } from "zod";
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import session from "express-session";
-import { insertUserSchema, insertSessionSchema, messages, sessions, chats } from "@shared/schema";
+import { insertUserSchema, insertSessionSchema, messages, sessions, chats, users } from "@shared/schema";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { db } from "./db";
 import { eq, count } from "drizzle-orm";
+import connectPgSimple from 'connect-pg-simple'; // Импортируем connect-pg-simple
+import { DatabaseStorage, type IStorage } from "./storage"; 
+import pg from 'pg'; // Импортируем весь модуль pg
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import * as telegramGram from './telegram-gram';
+import { sql } from "drizzle-orm";
+import { type Chat } from '@shared/schema'; // Импортируем тип Chat
+// Импортируем нужные функции в начале файла
+import { getUserDialogs, getChatHistory } from "./telegram-gram"; // Убедимся, что они импортированы
+import { type Chat } from '@shared/schema'; // Импортируем тип Chat
+// ---> ДОБАВЛЯЕМ ИМПОРТ DbInstance <--- 
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import * as schema from "@shared/schema"; // Добавляем импорт schema
 
+// ---> ОПРЕДЕЛЯЕМ ТИП DbInstance <--- 
+type DbInstance = NodePgDatabase<typeof schema>;
 
+// Создаем экземпляр основного хранилища данных ЗДЕСЬ, вне registerRoutes
+const storage: IStorage = new DatabaseStorage();
 
 // Хелперы для работы с паролями
 const scryptAsync = promisify(scrypt);
@@ -90,14 +108,134 @@ const qrTokenSchema = z.object({
   token: z.string().min(1)
 });
 
-export async function registerRoutes(app: Express): Promise<Server> {
+// Создаем экземпляр хранилища сессий
+const PGStore = connectPgSimple(session);
+
+// Функция для проверки и создания таблицы сессий
+async function setupSessionTable() {
+  try {
+    console.log("Проверка и создание таблицы session для хранения сессий...");
+    
+    // Используем соединение из конфигурации приложения
+    const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    
+    // Проверяем существование таблицы session
+    const checkTableResult = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'session'
+      );
+    `);
+    
+    const tableExists = checkTableResult.rows[0].exists;
+    
+    if (!tableExists) {
+      console.log("Таблица session не существует, создаем...");
+      
+      try {
+        // Читаем SQL-скрипт для создания таблицы
+        const sqlPath = join(process.cwd(), 'session-table.sql');
+        const sqlScript = readFileSync(sqlPath, 'utf8');
+        
+        // Выполняем SQL-скрипт
+        await pool.query(sqlScript);
+        console.log("Таблица session успешно создана");
+      } catch (readError) {
+        console.error("Ошибка при чтении или выполнении SQL-скрипта:", readError);
+        console.error("Пожалуйста, выполните скрипт session-table.sql вручную");
+      }
+    } else {
+      // Проверяем наличие колонки sid
+      const checkSidColumnResult = await pool.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.columns 
+          WHERE table_name = 'session' AND column_name = 'sid'
+        );
+      `);
+      
+      const sidColumnExists = checkSidColumnResult.rows[0].exists;
+      
+      if (!sidColumnExists) {
+        console.error("Таблица session существует, но не содержит требуемой колонки 'sid'");
+        console.error("Пожалуйста, выполните скрипт session-table.sql вручную");
+      } else {
+        console.log("Таблица session существует и содержит требуемые колонки");
+      }
+    }
+    
+    // Закрываем соединение
+    await pool.end();
+  } catch (error) {
+    console.error("Ошибка при настройке таблицы сессий:", error);
+  }
+}
+
+// Отдельная асинхронная функция для обработки логина по телефону
+async function handlePhoneLogin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = req.user as any;
+    
+    if (!user) {
+       // Эта проверка на всякий случай, passport должен был вернуть ошибку раньше
+       return res.status(401).json({ message: 'Не авторизован' });
+    }
+    
+    // Создаем лог о входе (теперь storage доступен)
+    await storage.createLog({
+      userId: user.id,
+      action: 'user_login',
+      details: { phoneNumber: user.phoneNumber },
+      ipAddress: req.ip
+    });
+
+    // Генерируем токен сессии для API (если он не был создан ранее)
+    const sessionToken = (req.session as any).token || randomBytes(48).toString('hex');
+    if (!(req.session as any).token) {
+        (req.session as any).token = sessionToken;
+        await storage.createSession({
+             userId: user.id,
+             sessionToken,
+             ipAddress: req.ip || null,
+             userAgent: req.headers['user-agent'] || null,
+             expiresAt: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)) // 30 дней
+        });
+    }
+
+    // Отправляем успешный ответ
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        isAdmin: user.isAdmin
+      },
+      sessionToken // Отправляем токен сессии
+    });
+  } catch (error) {
+    console.error('Phone login handler error:', error);
+    next(error); // Передаем ошибку дальше
+  }
+}
+
+// Обновляем сигнатуру, чтобы принимать storage (хотя он теперь глобальный для этого модуля)
+// Оставим аргумент для ясности, но будем использовать storage, объявленный выше
+export async function registerRoutes(app: Express, /* storage: IStorage */): Promise<Server> {
+  // Проверяем и инициализируем таблицу сессий
+  await setupSessionTable();
+  
   // Эндпоинт для проверки работоспособности приложения
   app.get('/api/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });
   
-  // Настройка сессий
+  // Настройка сессий с connect-pg-simple
   app.use(session({
+    store: new PGStore({
+      pool: (db as any).$client, // Используем .$client для доступа к pool
+      tableName: 'session' // ИСПРАВЛЕНО: Имя таблицы для express-session
+    }),
     secret: process.env.SESSION_SECRET || randomBytes(32).toString('hex'),
     resave: false,
     saveUninitialized: false,
@@ -124,6 +262,93 @@ export async function registerRoutes(app: Express): Promise<Server> {
       done(err);
     }
   });
+
+  // Настройка LocalStrategy для Passport
+  passport.use(new LocalStrategy(
+    { usernameField: 'phoneNumber' }, // Используем phoneNumber как username
+    async (phoneNumber, password, done) => {
+      try {
+        const user = await storage.getUserByPhoneNumber(phoneNumber);
+        if (!user) {
+          return done(null, false, { message: 'Пользователь не найден' });
+        }
+        if (!user.password) {
+            return done(null, false, { message: 'Пароль не установлен' });
+        }
+        const isMatch = await comparePasswords(password, user.password);
+        if (!isMatch) {
+          // Логгируем неудачную попытку
+          await storage.createLog({
+            userId: user.id,
+            action: 'login_failed',
+            details: { phoneNumber, reason: 'invalid_password' },
+            ipAddress: undefined // IP недоступен здесь
+          });
+          return done(null, false, { message: 'Неверный пароль' });
+        }
+        // Обновляем lastLogin
+        await storage.updateUser(user.id, { lastLogin: new Date() });
+        return done(null, user);
+      } catch (err) {
+        return done(err);
+      }
+    }
+  ));
+
+  // Настройка LocalStrategy для входа админа по имени пользователя и паролю
+  passport.use('admin-local', new LocalStrategy({
+      usernameField: 'username', // поле для имени пользователя в запросе
+      passwordField: 'password'  // поле для пароля в запросе
+    },
+    async (username, password, done) => {
+      try {
+        // Ищем пользователя по имени пользователя
+        const userResult = await db.select().from(users).where(eq(users.username, username)).limit(1);
+        const user = userResult[0];
+
+        // Если пользователь не найден или он не админ
+        if (!user || !user.isAdmin) {
+          return done(null, false, { message: 'Неверное имя пользователя или пароль.' });
+        }
+        
+        // Проверяем пароль
+        if (!user.password) {
+           // Если хеша нет И это пользователь 'admin' И введен пароль 'admin'
+           if (user.username === 'admin' && password === 'admin') {
+              console.log(`[Admin Login] First login for 'admin'. Setting password hash.`);
+              try {
+                const newPasswordHash = await hashPassword(password); // Генерируем хеш
+                // Обновляем пользователя в БД
+                await db.update(users)
+                  .set({ password: newPasswordHash })
+                  .where(eq(users.username, user.username));
+                console.log(`[Admin Login] Password hash set successfully for 'admin'. Proceeding with login.`);
+                // Считаем пароль верным и продолжаем вход
+                return done(null, user); 
+              } catch (updateError) {
+                console.error(`[Admin Login] Failed to set password hash for 'admin':`, updateError);
+                return done(updateError); // Возвращаем ошибку обновления
+              }
+           } else {
+              // Если хеша нет, и это не первый вход админа с паролем 'admin'
+              return done(null, false, { message: 'Учетная запись администратора не настроена для входа по паролю.' });
+           }
+        }
+        
+        // Если хеш существует, сравниваем пароли
+        const isMatch = await comparePasswords(password, user.password);
+
+        if (!isMatch) {
+          return done(null, false, { message: 'Неверное имя пользователя или пароль.' });
+        }
+
+        // Пользователь найден и пароль совпадает
+        return done(null, user);
+      } catch (err) {
+        return done(err);
+      }
+    }
+  ));
 
   // Middleware для проверки аутентификации
   const isAuthenticated = async (req: Request, res: Response, next: any) => {
@@ -170,48 +395,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Middleware для проверки прав администратора
   const isAdmin = (req: Request, res: Response, next: any) => {
-    // Проверка авторизации через заголовок Admin-Authorization
-    const adminToken = req.headers['admin-authorization'] as string;
+    // Проверка авторизации через заголовок Authorization или Admin-Authorization
+    const adminToken = req.headers['admin-authorization'] as string || req.headers['authorization'] as string;
     
     if (adminToken) {
+      try {
+        // Извлекаем токен из Bearer формата, если такой есть
+        const token = adminToken.startsWith('Bearer ') ? adminToken.substring(7) : adminToken;
+        
       // Проверяем токен администратора
-      storage.getSession(adminToken)
+        storage.getSession(token)
         .then(session => {
-          if (session) {
+            if (session && session.userId) {
             // Получаем данные пользователя по ID из сессии
-            return storage.getUser(session.userId);
+              return storage.getUserById(session.userId);
           }
           return null;
         })
         .then(user => {
           if (user && user.isAdmin) {
-            (req as any).adminUser = user;
+              // Сохраняем информацию о пользователе-администраторе в объекте запроса
+              (req as any).admin = {
+                id: user.id,
+                isAdmin: true
+              };
             next();
           } else {
             res.status(403).json({ message: 'Доступ запрещен' });
           }
         })
         .catch(err => {
-          console.error('Admin auth error:', err);
-          res.status(500).json({ message: 'Ошибка авторизации' });
-        });
-      return;
-    }
-    
-    // Проверка обычной авторизации через сессию
-    if (req.isAuthenticated() && req.user && (req.user as any).isAdmin) {
-      return next();
-    }
-    
-    // Временно отключена проверка на администратора (для тестирования)
-    // return next();
-    
+            console.error('Ошибка при проверке прав администратора:', err);
+            res.status(500).json({ message: 'Ошибка сервера' });
+          });
+      } catch (error) {
+        console.error('Ошибка при обработке токена администратора:', error);
+        res.status(500).json({ message: 'Ошибка сервера' });
+      }
+    } else {
     res.status(403).json({ message: 'Доступ запрещен' });
+    }
   };
 
   // API маршруты
-  // 1. Telegram авторизация
-  app.post('/api/auth/telegram', async (req, res) => {
+  // 1. Telegram авторизация (старый метод, можно оставить или удалить)
+  app.post('/api/auth/telegram', async (req, res, next) => {
     try {
       const authData = telegramAuthSchema.parse(req.body);
       
@@ -306,8 +534,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 2. Проверка 2FA кода
-  app.post('/api/auth/verify-2fa', async (req, res) => {
+  // 2. Двухфакторная аутентификация Telegram
+  app.post('/api/auth/2fa', isAuthenticated, async (req, res) => {
     try {
       const { telegramId, code } = req.body;
       
@@ -375,44 +603,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 3. Повторная отправка 2FA кода
-  app.post('/api/auth/resend-2fa', async (req, res) => {
-    try {
-      const { telegramId } = req.body;
-      
-      if (!telegramId) {
-        return res.status(400).json({ message: 'Отсутствует Telegram ID' });
-      }
-
-      // Проверяем существование пользователя
-      const user = await storage.getUserByTelegramId(telegramId);
-      
-      if (!user) {
-        return res.status(404).json({ message: 'Пользователь не найден' });
-      }
-
-      // Генерируем и отправляем новый код
-      await generateTwoFACode(telegramId);
-
-      res.json({
-        success: true,
-        message: 'Код подтверждения отправлен повторно'
-      });
-    } catch (error) {
-      console.error('Resend 2FA error:', error);
-      res.status(500).json({ message: 'Ошибка отправки кода' });
-    }
-  });
-
-  // === НОВАЯ СИСТЕМА АВТОРИЗАЦИИ ПО ТЕЛЕФОНУ ЧЕРЕЗ API TELEGRAM ===
-
-  // 1. Запрос кода подтверждения по телефону
-  app.post('/api/auth/phone/request-code', async (req, res) => {
+  // 3. Запрос кода подтверждения по телефону
+  app.post('/api/auth/phone/request-code', async (req, res, next) => {
     try {
       const { phoneNumber } = requestPhoneCodeSchema.parse(req.body);
       
       // Отправляем запрос на получение кода через Telegram API
-      const result = await sendAuthCode(phoneNumber);
+      const result = await sendAuthCode(db, phoneNumber);
       
       if (!result.success) {
         return res.status(500).json({ 
@@ -452,72 +649,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // 2. Проверка кода подтверждения по телефону и регистрация пользователя
-  app.post('/api/auth/phone/verify-code', async (req, res) => {
+  // 4. Верификация кода подтверждения по телефону
+  app.post('/api/auth/phone/verify-code', async (req, res, next) => {
     try {
       const { phoneNumber, code } = verifyPhoneCodeSchema.parse(req.body);
       
       // Проверка кода через Telegram API
-      const verifyResult = await verifyAuthCode(phoneNumber, code);
+      const verifyResult = await verifyAuthCode(db, phoneNumber, code);
       
+      // Обработка ошибок верификации
       if (!verifyResult.success) {
+        // Обработка requireSignUp и require2FA (оставляем, если нужно)
+        if (verifyResult.requireSignUp) {
+        return res.status(400).json({ 
+          success: false, 
+          requireSignUp: true,
+                phoneCodeHash: verifyResult.phoneCodeHash,
+                message: verifyResult.error || 'Номер не зарегистрирован в Telegram' 
+        });
+      }
+      if (verifyResult.require2FA) {
+            return res.status(400).json({ 
+                success: false, 
+          require2FA: true,
+                phoneCodeHash: verifyResult.phoneCodeHash,
+                message: verifyResult.error || 'Требуется двухфакторная аутентификация' 
+            });
+        }
+        // Общая ошибка верификации
         return res.status(400).json({ 
           success: false, 
           message: verifyResult.error || 'Неверный код или истек срок действия' 
         });
       }
       
-      // Проверяем, требуется ли регистрация нового пользователя
-      if (verifyResult.requireSignUp) {
-        return res.json({
-          success: true,
-          requireSignUp: true,
-          phoneNumber,
-          phoneCodeHash: verifyResult.phoneCodeHash
+      // ---> НАЧАЛО ИЗМЕНЕНИЙ <--- 
+      
+      // Успешная верификация! Получаем данные пользователя из Telegram
+      const telegramUser = verifyResult.user;
+      if (!telegramUser || !telegramUser.id) {
+        console.error("Verification successful, but Telegram user data missing:", verifyResult);
+        return res.status(500).json({ 
+          success: false,
+          message: 'Не удалось получить данные пользователя после верификации' 
         });
       }
       
-      // Проверяем, требуется ли 2FA
-      if (verifyResult.require2FA) {
-        return res.json({
-          success: true,
-          require2FA: true,
-          phoneNumber,
-          phoneCodeHash: verifyResult.phoneCodeHash
-        });
-      }
-      
-      // Проверяем, существует ли пользователь с таким телефоном
+      const telegramId = telegramUser.id; // Получаем Telegram ID
+
+      // Проверяем, существует ли пользователь с таким телефоном в нашей БД
       let user = await storage.getUserByPhoneNumber(phoneNumber);
+      let isNewUserInApp = false;
       
       if (user) {
         // Пользователь существует, обновляем его данные
+        console.log(`User ${user.id} (phone: ${phoneNumber}) verified. Updating data.`);
         user = await storage.updateUser(user.id, {
+          isVerified: true,
+          verificationCode: null, // Очищаем код верификации
+          verificationCodeExpires: null,
+          telegramId: telegramId, // <--- Сохраняем/обновляем Telegram ID
+          firstName: telegramUser.firstName || user.firstName, // Обновляем имя, если есть
+          lastName: telegramUser.lastName || user.lastName,   // Обновляем фамилию, если есть
+          username: telegramUser.username || user.username,     // Обновляем юзернейм, если есть
+          lastLogin: new Date()
+        }) || user; // Берем обновленного пользователя
+
+        await storage.createLog({ userId: user.id, action: 'user_login_phone_code', details: { phoneNumber }, ipAddress: req.ip });
+
+      } else {
+        // Пользователя нет, создаем нового на основе данных от Telegram
+        console.log(`User with phone ${phoneNumber} not found. Creating new user.`);
+        isNewUserInApp = true;
+        user = await storage.createUser({
+          phoneNumber,
+          telegramId: telegramId, // <--- Сохраняем Telegram ID
+          firstName: telegramUser.firstName || null,
+          lastName: telegramUser.lastName || null,
+          username: telegramUser.username || null,
           isVerified: true,
           verificationCode: null,
           verificationCodeExpires: null,
-          lastLogin: new Date()
-        }) || user;
-        
-        // Создаем лог о входе
-        await storage.createLog({
-          userId: user.id,
-          action: 'user_login',
-          details: { phoneNumber },
-          ipAddress: req.ip
+          lastLogin: new Date(),
+          // Пароль НЕ устанавливаем здесь
         });
+
+        await storage.createLog({ userId: user.id, action: 'user_registered_phone_code', details: { phoneNumber, telegramId }, ipAddress: req.ip });
         
-        // Проверяем, установлен ли пароль
-        if (!user.password) {
-          return res.json({
-            success: true,
-            requirePassword: true,
-            isNewUser: false,
-            phoneNumber
-          });
-        }
-        
-        // Создаем сессию
+        // Отправляем уведомление администратору (если нужно)
+        // ... (код уведомления можно добавить сюда) ...
+      }
+
+      // --- Убрали проверку `if (!user.password)` и возврат `requirePassword: true` ---
+
+      // Создаем сессию для пользователя (существующего или нового)
         const sessionToken = randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
         
@@ -529,19 +754,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           expiresAt
         });
         
-        // Авторизуем пользователя
+      // Авторизуем пользователя в сессии Express
         req.login(user, (err) => {
           if (err) {
+          console.error("Error logging in user after phone code verification:", err);
             return res.status(500).json({ 
               success: false,
-              message: 'Ошибка авторизации' 
+            message: 'Ошибка автоматической авторизации после верификации' 
             });
           }
           
-          // Возвращаем данные пользователя и токен сессии
-          return res.json({
+        // Возвращаем успешный ответ с данными пользователя и токеном
+        console.log(`User ${user.id} successfully logged in via phone code. Returning session token.`);
+        res.json({
             success: true,
-            user: {
+          user: { // Отправляем безопасные данные
               id: user?.id,
               phoneNumber: user?.phoneNumber,
               username: user?.username,
@@ -549,50 +776,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
               lastName: user?.lastName,
               isAdmin: user?.isAdmin
             },
-            sessionToken
-          });
+          sessionToken,
+          isNewUser: isNewUserInApp // Можно передать флаг, если фронтенду это нужно
+        }); // <-- Отправляем ответ КЛИЕНТУ СРАЗУ
+
+        // ---> ЗАПУСК ФОНОВОЙ СИНХРОНИЗАЦИИ ПОСЛЕ ОТПРАВКИ ОТВЕТА <--- 
+        console.log(`Initiating background sync for user ${user.id}...`);
+        initiateBackgroundSync(user.id, db, storage).catch(syncError => {
+            // Логируем ошибку фоновой синхронизации, но не влияем на пользователя
+            console.error(`[Background Sync] Uncaught error for user ${user.id}:`, syncError);
         });
-      } else {
-        // Пользователя нет, нужно создать нового на основе данных от Telegram
-        const telegramUser = verifyResult.user;
-        
-        if (!telegramUser) {
-          return res.status(500).json({ 
-            success: false,
-            message: 'Не удалось получить данные пользователя' 
-          });
-        }
-        
-        // Создаем нового пользователя
-        user = await storage.createUser({
-          phoneNumber,
-          firstName: telegramUser.firstName || null,
-          lastName: telegramUser.lastName || null,
-          username: telegramUser.username || null,
-          isVerified: true,
-          verificationCode: null,
-          verificationCodeExpires: null,
-          lastLogin: new Date()
-        });
-        
-        // Создаем лог о регистрации
-        await storage.createLog({
-          userId: user.id,
-          action: 'user_registered',
-          details: { phoneNumber },
-          ipAddress: req.ip
-        });
-        
-        // Пользователю нужно установить пароль
-        return res.json({
-          success: true,
-          requirePassword: true,
-          isNewUser: true,
-          phoneNumber
-        });
-      }
+        // Мы НЕ ждем (await) завершения initiateBackgroundSync
+
+      }); // Конец req.login callback
+
+      // ---> КОНЕЦ ИЗМЕНЕНИЙ <--- 
+
     } catch (error) {
       console.error('Phone code verification error:', error);
+      // Проверяем, является ли ошибка ZodError для более информативного ответа
+      if (error instanceof z.ZodError) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Неверный формат данных', 
+            errors: error.errors 
+          });
+      }
       res.status(500).json({ 
         success: false,
         message: error instanceof Error ? error.message : 'Ошибка проверки кода' 
@@ -600,8 +809,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // 3. Установка пароля после регистрации
-  app.post('/api/auth/phone/set-password', async (req, res) => {
+  // 5. Установка пароля (после верификации телефона)
+  app.post('/api/auth/phone/set-password', async (req, res, next) => {
     try {
       const { phoneNumber, password, firstName, lastName, email } = setPasswordSchema.parse(req.body);
       
@@ -669,935 +878,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // 4. Вход по телефону и паролю
-  app.post('/api/auth/phone/login', async (req, res) => {
-    try {
-      const { phoneNumber, password } = phoneLoginSchema.parse(req.body);
-      
-      // Получаем пользователя по телефону
-      const user = await storage.getUserByPhoneNumber(phoneNumber);
-      
-      if (!user) {
-        return res.status(404).json({ message: 'Пользователь не найден' });
-      }
-      
-      if (!user.password) {
-        return res.status(400).json({ message: 'Необходимо установить пароль' });
-      }
-      
-      // Проверяем пароль
-      const passwordValid = await comparePasswords(password, user.password);
-      
-      if (!passwordValid) {
-        // Создаем лог о неудачной попытке входа
-        await storage.createLog({
-          userId: user.id,
-          action: 'login_failed',
-          details: { phoneNumber, reason: 'invalid_password' },
-          ipAddress: req.ip
-        });
-        
-        return res.status(400).json({ message: 'Неверный пароль' });
-      }
-      
-      // Обновляем данные о последнем входе
-      await storage.updateUser(user.id, {
-        lastLogin: new Date()
-      });
-      
-      // Создаем сессию
-      const sessionToken = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
-      
-      await storage.createSession({
-        userId: user.id,
-        sessionToken,
-        ipAddress: req.ip || null,
-        userAgent: req.headers['user-agent'] || null,
-        expiresAt
-      });
-      
-      // Авторизуем пользователя
-      req.login(user, (err) => {
-        if (err) {
-          return res.status(500).json({ message: 'Ошибка авторизации' });
-        }
-        
-        // Создаем лог о входе
-        storage.createLog({
-          userId: user.id,
-          action: 'user_login',
-          details: { phoneNumber },
-          ipAddress: req.ip
-        });
-        
-        res.json({
-          success: true,
-          user: {
-            id: user.id,
-            phoneNumber: user.phoneNumber,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            isAdmin: user.isAdmin
-          },
-          sessionToken
-        });
-      });
-    } catch (error) {
-      console.error('Phone login error:', error);
-      res.status(500).json({ message: 'Ошибка входа в систему' });
-    }
-  });
-
-  // 4. Получение данных пользователя
-  app.get('/api/user', isAuthenticated, async (req, res) => {
-    const user = req.user as any;
-    
-    res.json({
-      id: user.id,
-      telegramId: user.telegramId,
-      phoneNumber: user.phoneNumber,
-      email: user.email,
-      username: user.username,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      avatarUrl: user.avatarUrl,
-      isAdmin: user.isAdmin,
-      isVerified: user.isVerified
-    });
-  });
-
-  // 5a. Функция принудительного создания тестовых чатов (без аутентификации для тестирования)
-  app.post('/api/chats/create-test-force', async (req, res) => {
-    try {
-      // Получаем любого пользователя из БД для тестирования
-      const users = await storage.listUsers(1);
-      if (users.length === 0) {
-        return res.status(404).json({ success: false, message: "Пользователи не найдены" });
-      }
-      
-      const user = users[0]; // Берем первого пользователя
-      console.log("Создание тестовых чатов для пользователя:", user.id);
-      
-      const testContacts = [
-        { id: "12345", first_name: "Telegram", last_name: "User 1", username: "test1" },
-        { id: "12346", first_name: "Telegram", last_name: "User 2", username: "test2" },
-        { id: "12347", first_name: "Telegram", last_name: "Support", username: "support" }
-      ];
-      
-      const savedChats = [];
-      
-      for (const contact of testContacts) {
-        // Создание базового чата
-        const userId = contact.id;
-        const chatId = `user_${userId}`;
-        const chatType = 'private';
-        const chatTitle = `${contact.first_name} ${contact.last_name}`;
-        
-        // Безопасная дата
-        const safeDate = new Date();
-        
-        try {
-          // Проверяем существование чата
-          let existingChat = await storage.getChatByIds(user.id, chatId);
-          
-          if (existingChat) {
-            console.log(`Обновляем существующий тестовый чат: ${chatTitle}`);
-            existingChat = await storage.updateChat(existingChat.id, {
-              title: chatTitle,
-              lastMessageDate: safeDate,
-              lastMessageText: "Тестовое сообщение"
-            });
-            savedChats.push(existingChat);
-          } else {
-            console.log(`Создаем новый тестовый чат: ${chatTitle}`);
-            const newChat = await storage.createChat({
-              userId: user.id,
-              chatId: chatId,
-              type: chatType,
-              title: chatTitle,
-              lastMessageDate: safeDate,
-              lastMessageText: "Начало тестового чата",
-              unreadCount: 0,
-              photoUrl: ""
-            });
-            
-            console.log(`Тестовый чат создан с ID: ${newChat.id}`);
-            savedChats.push(newChat);
-          }
-        } catch (error) {
-          console.error(`Ошибка при создании тестового чата ${chatTitle}:`, error);
-        }
-      }
-      
-      // Получаем обновленный список чатов
-      const updatedChats = await storage.listUserChats(user.id);
-      res.json({
-        success: true,
-        created: savedChats.length,
-        chats: updatedChats,
-        userId: user.id
-      });
-      
-    } catch (error) {
-      console.error("Ошибка создания тестовых чатов:", error);
-      res.status(500).json({ 
-        success: false,
-        message: "Не удалось создать тестовые чаты" 
-      });
-    }
-  });
-  
-  // Оригинальная версия с аутентификацией
-  app.post('/api/chats/create-test', isAuthenticated, async (req, res) => {
-    try {
-      const user = req.user as any;
-      console.log("Создание тестовых чатов для пользователя:", user.id);
-      
-      const testContacts = [
-        { id: "12345", first_name: "Telegram", last_name: "User 1", username: "test1" },
-        { id: "12346", first_name: "Telegram", last_name: "User 2", username: "test2" },
-        { id: "12347", first_name: "Telegram", last_name: "Support", username: "support" }
-      ];
-      
-      const savedChats = [];
-      
-      for (const contact of testContacts) {
-        // Создание базового чата
-        const userId = contact.id;
-        const chatId = `user_${userId}`;
-        const chatType = 'private';
-        const chatTitle = `${contact.first_name} ${contact.last_name}`;
-        
-        // Безопасная дата
-        const safeDate = new Date();
-        
-        try {
-          // Проверяем существование чата
-          let existingChat = await storage.getChatByIds(user.id, chatId);
-          
-          if (existingChat) {
-            console.log(`Обновляем существующий тестовый чат: ${chatTitle}`);
-            existingChat = await storage.updateChat(existingChat.id, {
-              title: chatTitle,
-              lastMessageDate: safeDate,
-              lastMessageText: "Тестовое сообщение"
-            });
-            savedChats.push(existingChat);
-          } else {
-            console.log(`Создаем новый тестовый чат: ${chatTitle}`);
-            const newChat = await storage.createChat({
-              userId: user.id,
-              chatId: chatId,
-              type: chatType,
-              title: chatTitle,
-              lastMessageDate: safeDate,
-              lastMessageText: "Начало тестового чата",
-              unreadCount: 0,
-              photoUrl: ""
-            });
-            
-            console.log(`Тестовый чат создан с ID: ${newChat.id}`);
-            savedChats.push(newChat);
-          }
-        } catch (error) {
-          console.error(`Ошибка при создании тестового чата ${chatTitle}:`, error);
-        }
-      }
-      
-      // Получаем обновленный список чатов
-      const updatedChats = await storage.listUserChats(user.id);
-      res.json({
-        success: true,
-        created: savedChats.length,
-        chats: updatedChats
-      });
-      
-    } catch (error) {
-      console.error("Ошибка создания тестовых чатов:", error);
-      res.status(500).json({ 
-        success: false,
-        message: "Не удалось создать тестовые чаты"
-      });
-    }
-  });
-  
-  // Обновление чатов из Telegram API с получением access_hash
-  app.get('/api/chats/refresh', isAuthenticated, async (req, res) => {
-    try {
-      const user = req.user as any;
-      console.log(`Обновление чатов из Telegram для пользователя: ${user.id} ${user.telegramId}`);
-      
-      // Получаем диалоги из Telegram API
-      try {
-        // Используем из Telegram API
-        const { getUserDialogs } = await import('./telegram-gram');
-        
-        const dialogsResult = await getUserDialogs();
-        
-        if (dialogsResult.success) {
-          const savedChats = [];
-          
-          // Обрабатываем диалоги и сохраняем в базу данных
-          for (const dialog of dialogsResult.dialogs) {
-            let chatId = '';
-            let chatType = '';
-            let chatTitle = '';
-            let chatPhoto = '';
-            let accessHash = '0';
-            
-            // Определяем тип диалога (личный чат, группа, канал)
-            if (dialog.peer && dialog.peer._ === 'peerUser') {
-              const userIdRaw = dialog.peer.user_id;
-              const userId = String(userIdRaw).replace('n', '');
-              
-              const userObj = dialogsResult.users.find((u: any) => {
-                const uId = String(u.id).replace('n', '');
-                return uId === userId;
-              });
-              
-              if (userObj) {
-                chatId = `user_${userId}`;
-                chatType = 'private';
-                chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim();
-                chatPhoto = userObj.photo ? `user_${userId}_photo` : '';
-                
-                if (userObj.access_hash) {
-                  accessHash = String(userObj.access_hash).replace('n', '');
-                  console.log(`Found access_hash for user ${userId}: ${accessHash}`);
-                }
-              }
-            } else if (dialog.peer._ === 'peerChat') {
-              const chatPeerIdRaw = dialog.peer.chat_id;
-              const chatPeerId = String(chatPeerIdRaw).replace('n', '');
-              
-              const chatObj = dialogsResult.chats.find((c: any) => {
-                const cId = String(c.id).replace('n', '');
-                return cId === chatPeerId;
-              });
-              
-              if (chatObj) {
-                chatId = `chat_${chatPeerId}`;
-                chatType = 'group';
-                chatTitle = chatObj.title || '';
-                chatPhoto = chatObj.photo ? `chat_${chatPeerId}_photo` : '';
-              }
-            } else if (dialog.peer._ === 'peerChannel') {
-              const channelIdRaw = dialog.peer.channel_id;
-              const channelId = String(channelIdRaw).replace('n', '');
-              
-              const channelObj = dialogsResult.chats.find((c: any) => {
-                const cId = String(c.id).replace('n', '');
-                return cId === channelId;
-              });
-              
-              if (channelObj) {
-                chatId = `channel_${channelId}`;
-                chatType = 'channel';
-                chatTitle = channelObj.title || '';
-                chatPhoto = channelObj.photo ? `channel_${channelId}_photo` : '';
-                
-                if (channelObj.access_hash) {
-                  accessHash = String(channelObj.access_hash).replace('n', '');
-                  console.log(`Found access_hash for channel ${channelId}: ${accessHash}`);
-                }
-              }
-            }
-            
-            // Обновляем чат в базе данных
-            if (chatId && chatTitle) {
-              try {
-                // Проверяем, существует ли уже этот чат в базе
-                let existingChat = await storage.getChatByIds(user.id, chatId);
-                
-                if (existingChat) {
-                  console.log(`Updating chat ${chatTitle} (${chatId}) with access_hash: ${accessHash}`);
-                  
-                  // Обновляем существующий чат с access_hash
-                  existingChat = await storage.updateChat(existingChat.id, {
-                    title: chatTitle,
-                    photoUrl: chatPhoto || existingChat.photoUrl,
-                    accessHash: accessHash
-                  });
-                  
-                  savedChats.push(existingChat);
-                } else {
-                  console.log(`Creating new chat: ${chatTitle} (${chatId}) with access_hash: ${accessHash}`);
-                  
-                  const currentDate = new Date();
-                  
-                  // Создаем новый чат с access_hash
-                  const chatData = {
-                    userId: user.id,
-                    chatId: chatId,
-                    type: chatType,
-                    title: chatTitle,
-                    lastMessageDate: currentDate,
-                    lastMessageText: '',
-                    unreadCount: dialog.unread_count || 0,
-                    photoUrl: chatPhoto,
-                    accessHash: accessHash
-                  };
-                  
-                  const newChat = await storage.createChat(chatData);
-                  savedChats.push(newChat);
-                }
-              } catch (error) {
-                console.error(`Error updating chat ${chatId} (${chatTitle}):`, error);
-              }
-            }
-          }
-          
-          // Возвращаем обновленные чаты
-          return res.json({ 
-            success: true,
-            message: `Updated ${savedChats.length} chats with access_hash values`,
-            updatedChats: savedChats.length
-          });
-        } else {
-          return res.status(500).json({ 
-            success: false,
-            message: 'Failed to retrieve dialogs from Telegram API',
-            error: dialogsResult.error 
-          });
-        }
-      } catch (error) {
-        console.error('Error refreshing Telegram chats:', error);
-        return res.status(500).json({ 
-          success: false,
-          message: 'Error refreshing Telegram chats',
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    } catch (error) {
-      console.error('Error in chat refresh endpoint:', error);
-      res.status(500).json({ 
-        success: false,
-        message: 'Internal server error',
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
-  
-  // 5. Получение чатов пользователя
-  app.get('/api/chats', isAuthenticated, async (req, res) => {
-    try {
-      const user = req.user as any;
-      
-      console.log("Запрос чатов для пользователя:", user.id, user.telegramId);
-      
-      // Получаем чаты из базы данных
-      let chats = await storage.listUserChats(user.id);
-      let needsUpdate = false;
-      
-      console.log(`Найдено ${chats.length} чатов в базе данных`);
-      
-      // Если чатов нет или их меньше 5, пытаемся получить обновленные данные
-      if (chats.length < 5) {
-        try {
-          // Получаем чаты через MTProto API
-          const { getUserDialogs } = await import('./telegram-gram');
-          
-          console.log("Запрашиваем диалоги из Telegram API...");
-          const dialogsResult = await getUserDialogs(5);
-          
-          if (dialogsResult.success) {
-            console.log(`Retrieved ${dialogsResult.dialogs?.length || 0} dialogs from Telegram API`);
-            console.log(`Retrieved ${dialogsResult.users?.length || 0} users from Telegram API`);
-            
-            // Проверяем, есть ли данные
-            if (!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) {
-              console.log("No dialogs received from API, checking if users are available");
-              
-              // Если dialogs отсутствуют, но есть пользователи, создаем диалоги на основе пользователей
-              if (dialogsResult.users && dialogsResult.users.length > 0) {
-                console.log(`Found ${dialogsResult.users.length} users, creating dialogs from them`);
-                dialogsResult.dialogs = dialogsResult.users.map((user: any) => ({
-                  peer: {
-                    _: 'peerUser',
-                    user_id: user.id
-                  },
-                  title: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
-                  unread_count: 0
-                }));
-              }
-            }
-            
-            // Обрабатываем данные диалогов и сохраняем в базу
-            const savedChats = [];
-            
-            console.log("Starting to process dialogs to save in database. Total dialogs:", dialogsResult.dialogs?.length || 0);
-            console.log("Total users:", dialogsResult.users?.length || 0);
-            
-            // Если диалоги отсутствуют или пустые, но есть пользователи - создаем диалоги напрямую из списка пользователей
-            if ((!dialogsResult.dialogs || dialogsResult.dialogs.length === 0) && dialogsResult.users && dialogsResult.users.length > 0) {
-              console.log("Creating direct chats from users list");
-              
-              for (const userObj of dialogsResult.users) {
-                // Создаем базовый чат для каждого пользователя
-                const userId = userObj.id;
-                const chatId = `user_${userId}`;
-                const chatType = 'private';
-                const chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim() || 'User Chat';
-                const chatPhoto = '';
-                
-                // Создаем безопасную текущую дату
-                const safeDate = new Date();
-                safeDate.setHours(0, 0, 0, 0);
-                
-                try {
-                  console.log(`Обработка контакта для создания чата: ${userId} - ${chatTitle}`);
-                  
-                  // Проверяем существует ли чат
-                  let existingChat = await storage.getChatByIds(user.id, chatId);
-                  
-                  if (existingChat) {
-                    console.log(`Updating existing chat for user ${userId}: ${chatTitle}`);
-                    existingChat = await storage.updateChat(existingChat.id, {
-                      title: chatTitle,
-                      lastMessageDate: safeDate
-                    });
-                    savedChats.push(existingChat);
-                  } else {
-                    console.log(`Creating new chat for user ${userId}: ${chatTitle}`);
-                    try {
-                      const newChat = await storage.createChat({
-                        userId: user.id,
-                        chatId: chatId,
-                        type: chatType,
-                        title: chatTitle,
-                        lastMessageDate: safeDate,
-                        lastMessageText: 'Начало чата',
-                        unreadCount: 0,
-                        photoUrl: chatPhoto
-                      });
-                      
-                      console.log("Чат успешно создан:", newChat.id);
-                      savedChats.push(newChat);
-                    } catch (createError) {
-                      console.error(`Ошибка при создании чата для ${userId}: ${chatTitle}`, createError);
-                    }
-                  }
-                } catch (chatError) {
-                  console.error(`Error saving chat for user ${userId}:`, chatError);
-                }
-              }
-              
-              // Обновляем список чатов и завершаем обработку
-              chats = await storage.listUserChats(user.id);
-              needsUpdate = true;
-              
-              console.log(`Created/updated ${savedChats.length} chats directly from users list`);
-              // Пропускаем стандартную обработку диалогов, блок будет просто пропущен
-            }
-            
-            // Стандартная обработка диалогов
-            for (const dialog of dialogsResult.dialogs || []) {
-              console.log("Processing dialog:", JSON.stringify(dialog, null, 2));
-              
-              // Получаем информацию о чате/пользователе
-              let chatInfo = null;
-              let chatId = '';
-              let chatType = '';
-              let chatTitle = '';
-              let chatPhoto = '';
-              
-              // Определяем тип диалога (личный чат, группа, канал)
-              if (dialog.peer && dialog.peer._ === 'peerUser') {
-                // Находим пользователя по ID
-                const userIdRaw = dialog.peer.user_id;
-                // Обеспечиваем правильное преобразование к строке для BigInt и Integer типов
-                const userId = String(userIdRaw).replace('n', ''); // Убираем 'n' в конце BigInt строк
-                console.log(`Processing user dialog with ID: ${userId} (original type: ${typeof userIdRaw})`);
-                
-                // Ищем пользователя по ID с разными вариантами сравнения
-                const userObj = dialogsResult.users.find((u: any) => {
-                  const uId = String(u.id).replace('n', '');
-                  return uId === userId;
-                });
-                
-                if (userObj) {
-                  chatId = `user_${userId}`;
-                  chatType = 'private';
-                  chatTitle = `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim();
-                  chatPhoto = userObj.photo ? `user_${userId}_photo` : ''; // Заглушка, позже можно добавить загрузку фото
-                  
-                  // Сохраняем access_hash для дальнейшего использования
-                  const accessHash = userObj.access_hash ? String(userObj.access_hash).replace('n', '') : '0';
-                  console.log(`User ${chatTitle} (${userId}) has access_hash: ${accessHash}`);
-                  
-                  // Добавляем в метаданные
-                  dialog.accessHash = accessHash;
-                }
-              } else if (dialog.peer._ === 'peerChat') {
-                // Находим групповой чат по ID
-                const chatPeerIdRaw = dialog.peer.chat_id;
-                const chatPeerId = String(chatPeerIdRaw).replace('n', '');
-                console.log(`Processing chat dialog with ID: ${chatPeerId} (original type: ${typeof chatPeerIdRaw})`);
-                
-                // Ищем чат по ID с разными вариантами сравнения
-                const chatObj = dialogsResult.chats.find((c: any) => {
-                  const cId = String(c.id).replace('n', '');
-                  return cId === chatPeerId;
-                });
-                
-                if (chatObj) {
-                  chatId = `chat_${chatPeerId}`;
-                  chatType = 'group';
-                  chatTitle = chatObj.title || '';
-                  chatPhoto = chatObj.photo ? `chat_${chatPeerId}_photo` : '';
-                }
-              } else if (dialog.peer._ === 'peerChannel') {
-                // Находим канал по ID
-                const channelIdRaw = dialog.peer.channel_id;
-                const channelId = String(channelIdRaw).replace('n', '');
-                console.log(`Processing channel dialog with ID: ${channelId} (original type: ${typeof channelIdRaw})`);
-                
-                // Ищем канал по ID с разными вариантами сравнения
-                const channelObj = dialogsResult.chats.find((c: any) => {
-                  const cId = String(c.id).replace('n', '');
-                  return cId === channelId;
-                });
-                
-                if (channelObj) {
-                  chatId = `channel_${channelId}`;
-                  chatType = 'channel';
-                  chatTitle = channelObj.title || '';
-                  chatPhoto = channelObj.photo ? `channel_${channelId}_photo` : '';
-                  
-                  // Сохраняем access_hash для канала
-                  const accessHash = channelObj.access_hash ? String(channelObj.access_hash).replace('n', '') : '0';
-                  console.log(`Channel ${chatTitle} (${channelId}) has access_hash: ${accessHash}`);
-                  
-                  // Добавляем в метаданные
-                  dialog.accessHash = accessHash;
-                }
-              }
-              
-              // Находим последнее сообщение
-              let lastMessage = null;
-              if (dialog.top_message) {
-                const message = dialogsResult.messages.find((m: any) => m.id === dialog.top_message);
-                if (message) {
-                  lastMessage = {
-                    id: message.id,
-                    text: message.message || '',
-                    // Безопасное создание даты с проверкой на корректность
-                    date: (() => {
-                      try {
-                        // Ограничиваем диапазон дат безопасным периодом
-                        const timestamp = message.date * 1000;
-                        const messageDate = new Date(timestamp);
-                        
-                        // Проверяем, что дата в разумных пределах (не ранее 2010 года и не позже текущей даты + 1 день)
-                        const minDate = new Date(2010, 0, 1);
-                        const maxDate = new Date();
-                        maxDate.setDate(maxDate.getDate() + 1);
-                        
-                        if (messageDate < minDate || messageDate > maxDate) {
-                          console.warn("Invalid message date detected, using current date");
-                          return new Date();
-                        }
-                        
-                        return messageDate;
-                      } catch (e) {
-                        console.warn("Error parsing message date:", e);
-                        return new Date();
-                      }
-                    })()
-                  };
-                }
-              }
-              
-              // Создаем или обновляем чат в базе данных
-              if (chatId && chatTitle) {
-                // Проверяем, существует ли уже этот чат в базе
-                let existingChat = await storage.getChatByIds(user.id, chatId);
-                
-                // Форматируем текущую дату для безопасного сохранения
-                const safeDate = new Date();
-                safeDate.setHours(0, 0, 0, 0); // Сбрасываем время для предотвращения проблем с timezone
-                
-                // Функция для создания безопасной даты сообщения
-                const getSafeMessageDate = () => {
-                  if (!lastMessage || !lastMessage.date) return safeDate;
-                  
-                  try {
-                    // Проверяем, что дата сообщения корректна
-                    if (
-                      isNaN(lastMessage.date.getTime()) || 
-                      lastMessage.date.getFullYear() < 2010 || 
-                      lastMessage.date.getFullYear() > 2030
-                    ) {
-                      return safeDate;
-                    }
-                    
-                    return lastMessage.date;
-                  } catch (e) {
-                    console.warn("Error validating message date:", e);
-                    return safeDate;
-                  }
-                };
-                
-                try {
-                  if (existingChat) {
-                    console.log(`Updating existing chat with ID ${existingChat.id} (${chatTitle})`);
-                    // Обновляем существующий чат
-                    existingChat = await storage.updateChat(existingChat.id, {
-                      title: chatTitle,
-                      lastMessageDate: getSafeMessageDate(),
-                      lastMessageText: lastMessage ? lastMessage.text : existingChat.lastMessageText,
-                      photoUrl: chatPhoto || existingChat.photoUrl,
-                      accessHash: dialog.accessHash || existingChat.accessHash || '0'
-                    });
-                    savedChats.push(existingChat);
-                    console.log(`Chat updated successfully: ${existingChat.id}`);
-                  } else {
-                    console.log(`Creating new chat: ${chatTitle} (${chatId})`);
-                    // Создаем новый чат с доп. проверками
-                    const chatData = {
-                      userId: user.id,
-                      chatId: chatId,
-                      type: chatType,
-                      title: chatTitle,
-                      lastMessageDate: getSafeMessageDate(),
-                      lastMessageText: lastMessage ? lastMessage.text : '',
-                      unreadCount: dialog.unread_count || 0,
-                      photoUrl: chatPhoto,
-                      accessHash: dialog.accessHash || '0'
-                    };
-                    console.log("Chat data to insert:", JSON.stringify(chatData, null, 2));
-                    
-                    const newChat = await storage.createChat(chatData);
-                    console.log(`New chat created with ID: ${newChat.id}`);
-                    savedChats.push(newChat);
-                  }
-                } catch (error) {
-                  console.error(`ERROR creating/updating chat ${chatId} (${chatTitle}):`, error);
-                  // Проверяем тип ошибки и выводим дополнительную информацию
-                  if (error instanceof Error) {
-                    console.error('Error stack:', error.stack);
-                    console.error('Error message:', error.message);
-                  }
-                }
-              }
-            }
-            
-            // Обновляем список чатов
-            chats = await storage.listUserChats(user.id);
-            needsUpdate = true;
-          } else {
-            console.error('Error from Telegram API:', dialogsResult.error);
-          }
-        } catch (error) {
-          console.error('Error fetching chats from Telegram:', error);
-          // Продолжаем выполнение и возвращаем имеющиеся чаты
-        }
-      }
-      
-      // Создаем лог о запросе чатов
-      await storage.createLog({
-        userId: user.id,
-        action: 'fetch_chats',
-        details: { count: chats.length, updated: needsUpdate },
-        ipAddress: req.ip
-      });
-      
-      res.json(chats);
-    } catch (error) {
-      console.error('Error fetching chats:', error);
-      res.status(500).json({ message: 'Ошибка получения чатов' });
-    }
-  });
-
-  // Тестовый эндпоинт для создания чатов (только для отладки)
-  app.post('/api/chats/create', isAuthenticated, async (req, res) => {
-    try {
-      const user = req.user as any;
-      const chatData = req.body;
-      
-      // Добавляем ID пользователя
-      chatData.userId = user.id;
-      
-      // Устанавливаем безопасную дату сообщения
-      if (!chatData.lastMessageDate) {
-        chatData.lastMessageDate = new Date();
-      }
-      
-      console.log("Creating test chat with data:", JSON.stringify(chatData, null, 2));
-      
-      // Создаем чат через функцию хранилища
-      const newChat = await storage.createChat(chatData);
-      console.log("Created test chat:", newChat);
-      
-      res.json(newChat);
-    } catch (error) {
-      console.error("Error creating test chat:", error);
-      if (error instanceof Error) {
-        console.error("Error message:", error.message);
-        console.error("Error stack:", error.stack);
-      }
-      res.status(500).json({ error: "Failed to create test chat" });
-    }
-  });
-  
-  // 6. Получение сообщений из конкретного чата
-  app.get('/api/chats/:chatId/messages', isAuthenticated, async (req, res) => {
-    try {
-      const user = req.user as any;
-      const { chatId } = req.params;
-      const limit = parseInt(req.query.limit as string) || 20;
-      
-      // Получаем чат из базы
-      const chat = await storage.getChatByIds(user.id, chatId);
-      
-      if (!chat) {
-        return res.status(404).json({ message: 'Чат не найден' });
-      }
-      
-      // Получаем сообщения чата из базы данных
-      let messages = await storage.listChatMessages(chat.id);
-      let needsUpdate = false;
-      
-      // Если сообщений нет или запрошено больше чем есть в базе, 
-      // получаем сообщения через MTProto API
-      if (messages.length < limit) {
-        try {
-          // Получаем историю чата через MTProto API
-          const { getChatHistory } = await import('./telegram-gram');
-          
-          // Формируем правильный peer объект на основе структуры chatId
-          let peer = null;
-          
-          // Разбираем chatId на части (формат: тип_id)
-          const chatIdParts = chat.chatId.split('_');
-          if (chatIdParts.length === 2) {
-            const chatType = chatIdParts[0];
-            const id = parseInt(chatIdParts[1]);
-            
-            if (!isNaN(id)) {
-              // Получаем access_hash из базы данных
-              const accessHashStr = chat.accessHash || '0';
-              
-              // Используем значение access_hash в исходном виде
-              // Конвертация в BigInt будет происходить в telegram-gram.ts
-              console.log(`Using access_hash for ${chatType}_${id}: ${accessHashStr}`);
-                  
-              if (chatType === 'user') {
-                peer = { _: 'inputPeerUser', user_id: id, access_hash: accessHashStr };
-              } else if (chatType === 'chat') {
-                peer = { _: 'inputPeerChat', chat_id: id };
-              } else if (chatType === 'channel') {
-                peer = { _: 'inputPeerChannel', channel_id: id, access_hash: accessHashStr };
-              }
-            }
-          }
-          
-          if (peer) {
-            // Увеличиваем лимит сообщений до 100 для получения большего количества
-            const historyResult = await getChatHistory(peer, 100);
-            
-            if (historyResult.success) {
-              console.log(`Retrieved ${historyResult.messages.length} messages from Telegram API`);
-              
-              // Обрабатываем полученные сообщения и сохраняем в базу
-              const savedMessages = [];
-              
-              for (const msg of historyResult.messages) {
-                // Обрабатываем только текстовые сообщения для простоты
-                if (msg._ === 'message' && msg.message) {
-                  // Определяем отправителя
-                  let senderName = 'Unknown';
-                  let senderId = '';
-                  
-                  if (msg.from_id && msg.from_id._ === 'peerUser') {
-                    const userId = msg.from_id.user_id;
-                    const sender = historyResult.users.find((u: any) => u.id === userId);
-                    
-                    if (sender) {
-                      senderName = `${sender.first_name || ''} ${sender.last_name || ''}`.trim();
-                      senderId = `user_${userId}`;
-                    }
-                  }
-                  
-                  // Создаем сообщение в базе данных
-                  const messageDate = new Date(msg.date * 1000);
-                  
-                  // Проверяем, существует ли сообщение с таким telegramId в этом чате
-                  const telegramMsgId = `${chat.chatId}_${msg.id}`;
-                  const existingMessage = await storage.getMessageByTelegramIdAndChatId(telegramMsgId, chat.id);
-                  
-                  if (!existingMessage) {
-                    const newMessage = await storage.createMessage({
-                      chatId: chat.id,
-                      messageId: msg.id.toString(), // Добавляем messageId из сообщения Telegram
-                      telegramId: telegramMsgId,
-                      senderId: senderId,
-                      senderName: senderName,
-                      text: msg.message,
-                      sentAt: messageDate,
-                      timestamp: new Date(), // Добавляем timestamp как текущее время
-                      isOutgoing: msg.out || false,
-                      mediaType: msg.media ? msg.media._ : null,
-                      mediaUrl: null // Пока не загружаем медиа
-                    });
-                    
-                    savedMessages.push(newMessage);
-                  }
-                }
-              }
-              
-              if (savedMessages.length > 0) {
-                // Обновляем последнее сообщение в чате
-                if (savedMessages.length > 0) {
-                  const latestMessage = savedMessages.reduce((latest, msg) => 
-                    new Date(msg.sentAt) > new Date(latest.sentAt) ? msg : latest, 
-                    savedMessages[0]
-                  );
-                  
-                  await storage.updateChat(chat.id, {
-                    lastMessageDate: latestMessage.sentAt,
-                    lastMessageText: latestMessage.text
-                  });
-                }
-                
-                // Удаляем старые сообщения, оставляя только последние 50
-                await storage.deleteOldMessages(chat.id, 50);
-                
-                // Обновляем список сообщений
-                messages = await storage.listChatMessages(chat.id);
-                needsUpdate = true;
-              }
-            } else {
-              console.error('Error from Telegram API:', historyResult.error);
-            }
-          } else {
-            console.error('Could not parse chatId or create peer object');
-          }
-        } catch (error) {
-          console.error('Error fetching messages from Telegram:', error);
-          // Продолжаем выполнение и возвращаем имеющиеся сообщения
-        }
-      }
-      
-      // Создаем лог о запросе сообщений
-      await storage.createLog({
-        userId: user.id,
-        action: 'fetch_messages',
-        details: { chatId, count: messages.length, updated: needsUpdate },
-        ipAddress: req.ip
-      });
-      
-      res.json(messages);
-    } catch (error) {
-      console.error('Error fetching messages:', error);
-      res.status(500).json({ message: 'Ошибка получения сообщений' });
-    }
-  });
+  // 6. Логин по телефону и паролю
+  app.post('/api/auth/phone/login', passport.authenticate('local'), handlePhoneLogin);
 
   // 7. Выход из системы
-  app.post('/api/auth/logout', isAuthenticated, async (req, res) => {
+  app.post('/api/auth/logout', async (req, res, next) => {
     try {
       const user = req.user as any;
       
@@ -1633,9 +918,583 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // === АДМИН API ===
+  // 8. Получение данных текущего пользователя
+  app.get('/api/auth/me', isAuthenticated, (req, res) => {
+    const user = req.user as any;
+    
+    res.json({
+      id: user.id,
+      telegramId: user.telegramId,
+      phoneNumber: user.phoneNumber,
+      email: user.email,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      avatarUrl: user.avatarUrl,
+      isAdmin: user.isAdmin,
+      isVerified: user.isVerified
+    });
+  });
+
+  // 9. QR-код авторизация: Создание
+  app.get('/api/auth/qr/create', async (req, res, next) => {
+    try {
+      // Передаем storage в createQRLoginCode
+      const result = await createQRLoginCode(db, storage);
+      if (result.success) {
+        res.status(200).json(result);
+      } else {
+        res.status(500).json(result);
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 10. QR-код авторизация: Проверка статуса и вход
+  app.post('/api/auth/qr/check', async (req: Request, res: Response) => {
+    try {
+      const { token } = qrTokenSchema.parse(req.body);
+      console.log(`[QR Check Route] Checking status for session: ${token}`);
+      // Передаем db и storage в функцию проверки
+      const result = await checkQRLoginStatus(db, storage, token);
+      console.log(`[QR Check Route] Result for session ${token}:`, result);
+      
+      if (result.success && result.user) {
+        // Успешный вход - устанавливаем сессию пользователя
+        // (В этой точке пользователь уже аутентифицирован через Telegram)
+        // Найдем или создадим пользователя в нашей БД
+        let appUser = await storage.getUserByTelegramId(result.user.id);
+        if (!appUser) {
+             appUser = await storage.createUser({
+                 telegramId: result.user.id,
+                 username: result.user.username || `tg_${result.user.id}`,
+                 firstName: result.user.firstName,
+                 lastName: result.user.lastName,
+                 // Дополнительные поля можно установить по умолчанию или оставить null
+             });
+        }
+
+        // Устанавливаем сессию для пользователя в нашем приложении
+        req.login(appUser, async (err) => {
+           if (err) {
+               console.error(`[QR Check Route] Error setting user session for ${token}:`, err);
+               return res.status(500).json({ success: false, error: "Failed to set user session after QR login." });
+           }
+           console.log(`[QR Check Route] Session set successfully for user ${appUser.id} via QR token ${token}`);
+           
+           // Удаляем использованную QR-сессию из базы данных
+           try {
+               await storage.deleteQrSession(token);
+               console.log(`[QR Check Route] Deleted used QR session: ${token}`);
+           } catch (deleteError) {
+                // Логируем ошибку, но не прерываем пользователя
+                console.error(`[QR Check Route] Failed to delete QR session ${token}:`, deleteError); 
+           }
+           
+           // Отправляем клиенту данные пользователя
+           res.json({ 
+                success: true, 
+                user: { // Отправляем только безопасные данные
+                    id: appUser.id,
+                    username: appUser.username,
+                    firstName: appUser.firstName,
+                    lastName: appUser.lastName,
+                    isAdmin: appUser.isAdmin
+                }
+            }); 
+        });
+
+      } else if (result.waiting) {
+        // Ожидаем подтверждения
+        console.log(`[QR Check Route] Waiting for confirmation for session: ${token}`);
+        res.json({ success: false, waiting: true, message: result.message });
+      } else {
+        // Ошибка проверки (токен истек, невалиден и т.д.)
+        console.log(`[QR Check Route] Check failed for session ${token}: ${result.error}`);
+        res.status(400).json({ success: false, error: result.error || "Failed to verify QR code." });
+      }
+    } catch (error: any) {
+      console.error('[QR Check Route] Error:', error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, error: "Invalid token format." });
+      }
+      res.status(500).json({ success: false, error: "Internal server error checking QR status." });
+    }
+  });
+
+  // 11. QR-код авторизация: Отмена сессии
+  app.post('/api/auth/qr/cancel', async (req, res, next) => {
+    // !! Нужно исправить получение токена !!
+    // Фронтенд передает { token: "..." }
+    const { token: sessionToken } = z.object({ token: z.string() }).parse(req.body);
+    try {
+      // Передаем storage в cancelQrSession
+      const result = await cancelQrSession(storage, sessionToken);
+      res.status(result.success ? 200 : 500).json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 2. Получение списка чатов пользователя
+  app.get('/api/chats', async (req, res) => {
+    try {
+      // Проверяем авторизацию пользователя
+      if (!req.user) {
+        console.warn('GET /api/chats - User not authenticated');
+        return res.status(401).json({ success: false, error: 'User not authenticated' });
+      }
+      
+      const userId = (req.user as any).id;
+      
+      // Получаем telegramId пользователя из БД
+      const user = await storage.getUser(userId);
+      if (!user || !user.telegramId) {
+        console.warn('GET /api/chats - User not authenticated with Telegram');
+        return res.status(401).json({ success: false, error: 'User not authenticated with Telegram' });
+      }
+      
+      console.log(`GET /api/chats - UserID: ${userId}, TelegramID: ${user.telegramId}`);
+      
+      // Сначала получаем список чатов из нашей БД
+      console.log(`GET /api/chats - Получаем существующие чаты из БД...`);
+      const existingChats = await storage.getUserChats(userId);
+      console.log(`GET /api/chats - Найдено ${existingChats.length} чатов в БД`);
+      
+      // Всегда запрашиваем обновленные чаты из Telegram (не только если их меньше 5)
+      console.log(`GET /api/chats - Обновляем чаты из Telegram...`);
+      const tgDialogs = await getUserDialogs(db, 200); // Увеличенный лимит для получения максимального количества личных чатов
+      
+      if (tgDialogs.success && tgDialogs.dialogs) {
+        console.log(`GET /api/chats - Получено ${tgDialogs.dialogs.length} диалогов из Telegram`);
+        console.log(`GET /api/chats - Обрабатываем диалоги...`);
+        
+        // Обработка полученных диалогов
+        for (const dialog of tgDialogs.dialogs) {
+          // Проверяем, что это личный чат (с пользователем)
+          if (dialog.type === 'User') {
+            // Получаем информацию о пользователе
+            const userInfo = tgDialogs.users.find((u: any) => u.id === dialog.peer.user_id.toString());
+            if (!userInfo) {
+              console.warn(`GET /api/chats - Не найдена информация о пользователе для диалога ${dialog.id}`);
+              continue;
+            }
+            
+            // Формируем имя пользователя
+            const chatName = dialog.title || `${userInfo.first_name || ''} ${userInfo.last_name || ''}`.trim() || userInfo.username || 'User';
+            
+            // Проверяем, существует ли уже такой чат в БД
+            const existingChat = existingChats.find(chat => 
+              chat.chatId === dialog.id || 
+              chat.chatId === `user_${dialog.peer.user_id}`
+            );
+            
+            const messageDate = new Date(dialog.lastUpdated || new Date().toISOString());
+                  
+                  if (existingChat) {
+              // Обновляем существующий чат
+              console.log(`GET /api/chats - Обновляем существующий чат: ${existingChat.id}, ${chatName}`);
+              await storage.updateChat(existingChat.id, {
+                chatId: dialog.id,
+                userId: userId,
+                title: chatName,
+                lastMessageText: dialog.lastMessage || existingChat.lastMessageText || '',
+                lastMessageDate: messageDate,
+                unreadCount: dialog.unreadCount || 0,
+                type: 'private',
+                metadata: {
+                  telegramUserId: dialog.peer.user_id.toString(),
+                  accessHash: dialog.accessHash || userInfo.access_hash || '0'
+                }
+              });
+                  } else {
+              // Создаем новый чат
+              console.log(`GET /api/chats - Создаем новый чат: ${dialog.id}, ${chatName}`);
+              await storage.createChat({
+                chatId: dialog.id,
+                userId: userId,
+                title: chatName,
+                lastMessageText: dialog.lastMessage || '',
+                lastMessageDate: messageDate,
+                unreadCount: dialog.unreadCount || 0,
+                type: 'private',
+                metadata: {
+                  telegramUserId: dialog.peer.user_id.toString(),
+                  accessHash: dialog.accessHash || userInfo.access_hash || '0'
+                }
+              });
+            }
+          }
+        }
+        
+        // Получаем обновленный список чатов
+        const updatedChats = await storage.getUserChats(userId);
+        console.log(`GET /api/chats - Возвращаем ${updatedChats.length} обновленных чатов`);
+        
+        // Сортируем чаты по дате последнего обновления
+        updatedChats.sort((a, b) => {
+          const dateA = new Date(a.lastMessageDate || '');
+          const dateB = new Date(b.lastMessageDate || '');
+          return dateB.getTime() - dateA.getTime();
+        });
+        
+        return res.status(200).json({
+          success: true,
+          chats: updatedChats
+        });
+      } else {
+        console.warn("GET /api/chats - Не удалось получить диалоги из Telegram:", tgDialogs.error);
+        
+        // Если получить диалоги из Telegram не удалось, возвращаем имеющиеся в БД
+        if (existingChats && existingChats.length > 0) {
+          console.log(`GET /api/chats - Возвращаем ${existingChats.length} существующих чатов`);
+          
+          // Сортируем чаты по дате последнего обновления
+          existingChats.sort((a, b) => {
+            const dateA = new Date(a.lastMessageDate || '');
+            const dateB = new Date(b.lastMessageDate || '');
+            return dateB.getTime() - dateA.getTime();
+          });
+          
+          return res.status(200).json({
+            success: true,
+            chats: existingChats
+          });
+                  } else {
+          // Если чатов нет совсем
+          console.warn("GET /api/chats - Чаты не найдены");
+          return res.status(200).json({
+            success: true,
+            chats: []
+          });
+        }
+          }
+        } catch (error) {
+      console.error("GET /api/chats - Ошибка:", error);
+      return res.status(500).json({ success: false, error: "Server error" });
+    }
+  });
+
+  // Тестовый эндпоинт для создания чатов (только для отладки)
+  app.post('/api/chats/create', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const chatData = req.body;
+      
+      // Добавляем ID пользователя
+      chatData.userId = user.id;
+      
+      // Устанавливаем безопасную дату сообщения
+      if (!chatData.lastMessageDate) {
+        chatData.lastMessageDate = new Date();
+      }
+      
+      console.log("Creating test chat with data:", JSON.stringify(chatData, null, 2));
+      
+      // Создаем чат через функцию хранилища
+      const newChat = await storage.createChat(chatData);
+      console.log("Created test chat:", newChat);
+      
+      res.json(newChat);
+    } catch (error) {
+      console.error("Error creating test chat:", error);
+      if (error instanceof Error) {
+        console.error("Error message:", error.message);
+        console.error("Error stack:", error.stack);
+      }
+      res.status(500).json({ error: "Failed to create test chat" });
+    }
+  });
   
-  // 1. Получение списка пользователей
+  // 12. Получение сообщений из конкретного чата
+  app.get('/api/chats/:chatId/messages', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const { chatId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
+      
+      // Получаем чат из базы
+      const chat = await storage.getChatByIds(user.id, chatId);
+      
+      if (!chat) {
+        return res.status(404).json({ message: 'Чат не найден' });
+      }
+      
+      // Получаем сообщения чата из базы данных
+      let messages = await storage.listChatMessages(chat.id);
+      let needsUpdate = false;
+      
+      // Если сообщений нет или запрошено больше чем есть в базе, 
+      // получаем сообщения через MTProto API
+      if (messages.length < limit) {
+        try {
+          // Получаем историю чата через MTProto API
+          const { getChatHistory } = await import('./telegram-gram');
+          
+          // Формируем правильный peer объект на основе информации о чате
+          let peer;
+          try {
+            console.log('Chat metadata:', chat.metadata);
+            console.log('Chat object:', JSON.stringify(chat, null, 2));
+            
+            // Приведем metadata к any, чтобы обойти проверки TypeScript
+            const metadata = chat.metadata as any;
+            
+            // Определяем тип чата
+            const chatType = metadata && metadata.idType ? metadata.idType : 
+                            (chat.type === 'channel' ? 'channel' : 
+                            (chat.type === 'group' ? 'chat' : 'user'));
+            
+            console.log(`Determined chat type: ${chatType}`);
+            
+            // Определяем идентификатор чата
+            const chatIdStr = chat.chatId;
+            
+            // Проверяем наличие chatId
+            if (!chatIdStr) {
+              return res.status(400).json({ error: 'Chat ID is missing or invalid' });
+            }
+            
+            // Создаем peer в зависимости от типа чата
+              if (chatType === 'user') {
+              // Для пользователей
+              const accessHash = metadata && metadata.accessHash ? metadata.accessHash : 
+                               (metadata && metadata.telegramAccessHash ? metadata.telegramAccessHash : '0');
+              
+              // Используем telegramUserId из metadata вместо chatId
+              const userId = metadata && metadata.telegramUserId ? metadata.telegramUserId : 
+                          (chatIdStr.startsWith('user_') ? chatIdStr.substring(5) : chatIdStr);
+              
+              console.log(`Creating user peer with userId: ${userId} and accessHash: ${accessHash}`);
+              
+              peer = {
+                userId: BigInt(userId), 
+                accessHash: BigInt(accessHash)
+              };
+              console.log('Created user peer:', peer);
+              } else if (chatType === 'chat') {
+              // Для групповых чатов
+              peer = {
+                chatId: BigInt(chatIdStr)
+              };
+              console.log('Created chat peer:', peer);
+              } else if (chatType === 'channel') {
+              // Для каналов
+              const accessHash = metadata && metadata.accessHash ? metadata.accessHash : 
+                               (metadata && metadata.telegramAccessHash ? metadata.telegramAccessHash : '0');
+              peer = {
+                channelId: BigInt(chatIdStr),
+                accessHash: BigInt(accessHash)
+              };
+              console.log('Created channel peer:', peer);
+            } else {
+              return res.status(400).json({ error: `Unknown chat type: ${chatType}` });
+            }
+          } catch (error) {
+            console.error('Error creating peer:', error);
+            return res.status(500).json({ error: 'Failed to create peer object' });
+          }
+          
+            // Увеличиваем лимит сообщений до 100 для получения большего количества
+            const historyResult = await getChatHistory(db, peer, 100);
+            
+            if (historyResult.success) {
+            console.log(`Retrieved ${historyResult.messages.length} messages from Telegram API for chat ID: ${chat.id}`); // Добавим ID чата
+              
+              // Обрабатываем полученные сообщения и сохраняем в базу
+              const savedMessages = [];
+              
+              for (const msg of historyResult.messages) {
+                // Обрабатываем только текстовые сообщения для простоты
+                if (msg._ === 'message' && msg.message) {
+                  // Определяем отправителя
+                  let senderName = 'Unknown';
+                  let senderId = '';
+                  
+                  if (msg.from_id && msg.from_id._ === 'peerUser') {
+                    const userId = msg.from_id.user_id;
+                    const sender = historyResult.users.find((u: any) => u.id === userId);
+                    
+                    if (sender) {
+                      senderName = `${sender.first_name || ''} ${sender.last_name || ''}`.trim();
+                    senderId = `user_${userId}`; // Используем ID пользователя как senderId
+                    }
+                  }
+                  
+                  // Создаем сообщение в базе данных
+                  const messageDate = new Date(msg.date * 1000);
+                  
+                  // Проверяем, существует ли сообщение с таким telegramId в этом чате
+                  const telegramMsgId = `${chat.chatId}_${msg.id}`;
+                  // Убедимся, что метод существует в storage перед вызовом
+                  if ('getMessageByTelegramIdAndChatId' in storage) {
+                      const existingMessage = await storage.getMessageByTelegramIdAndChatId(telegramMsgId, chat.id);
+                      
+                      if (!existingMessage) {
+                      // ---> Лог ПЕРЕД сохранением
+                      console.log(`[Storage] Attempting to create message with telegramId: ${telegramMsgId} for chat.id: ${chat.id}`);
+                      try {
+                        const messageDataToSave = {
+                          chatId: chat.id,
+                          messageId: msg.id.toString(), // Добавляем messageId из сообщения Telegram
+                          telegramId: telegramMsgId,
+                          senderId: senderId, // Используем определенный senderId
+                          senderName: senderName,
+                          text: msg.message,
+                          // Проверяем sentAt перед созданием Date
+                          sentAt: messageDate instanceof Date && !isNaN(messageDate.getTime()) ? messageDate : new Date(), 
+                          timestamp: new Date(), // Добавляем timestamp как текущее время
+                          isOutgoing: msg.out || false,
+                          mediaType: msg.media ? msg.media._ : null,
+                          mediaUrl: null // Пока не загружаем медиа
+                        };
+                        // ---> Лог данных ПЕРЕД сохранением
+                        console.log('[Storage] Data to save:', JSON.stringify(messageDataToSave));
+                        
+                        const newMessage = await storage.createMessage(messageDataToSave);
+                        
+                        // ---> Лог ПОСЛЕ успешного сохранения
+                        console.log(`[Storage] Successfully created message with DB ID: ${newMessage.id}, telegramId: ${telegramMsgId}`);
+                        savedMessages.push(newMessage);
+                      } catch (createError) {
+                         // ---> Лог в случае ОШИБКИ сохранения
+                         console.error(`[Storage] Error creating message with telegramId: ${telegramMsgId} for chat.id: ${chat.id}:`, createError);
+                      }
+                    } else {
+                      // ---> Лог, если сообщение УЖЕ СУЩЕСТВУЕТ
+                      console.log(`[Storage] Message with telegramId: ${telegramMsgId} already exists for chat.id: ${chat.id}. Skipping creation.`);
+                      }
+                  } else {
+                       console.warn("storage.getMessageByTelegramIdAndChatId method not found!");
+                  }
+              } else {
+                 // ---> Лог, если сообщение не текстовое или пустое
+                 console.log(`[Process] Skipping message ID ${msg.id} in chat ${chat.id}: Not a text message or empty. Type: ${msg._}`);
+                }
+              }
+              
+              if (savedMessages.length > 0) {
+                // Обновляем последнее сообщение в чате
+              if (savedMessages.length > 0) { // Эта проверка избыточна, т.к. мы уже внутри if (savedMessages.length > 0)
+                // ---> Лог перед обновлением чата
+                console.log(`[Storage] Updating last message for chat.id: ${chat.id} based on ${savedMessages.length} new messages.`);
+                  const latestMessage = savedMessages.reduce((latest, msg) => 
+                    // Добавляем проверку на null для sentAt
+                    (msg.sentAt && latest.sentAt && new Date(msg.sentAt) > new Date(latest.sentAt)) ? msg : latest, 
+                    savedMessages[0]
+                  );
+                  
+                  // Проверяем latestMessage и его поля перед обновлением чата
+                  if (latestMessage && latestMessage.sentAt) { 
+                      await storage.updateChat(chat.id, {
+                        lastMessageDate: latestMessage.sentAt, 
+                        lastMessageText: latestMessage.text
+                      });
+                    // ---> Лог после обновления чата
+                    console.log(`[Storage] Successfully updated last message for chat.id: ${chat.id}.`);
+                } else {
+                    console.warn(`[Storage] Could not update last message for chat.id: ${chat.id}. Latest message or sentAt is invalid.`);
+                  }
+              } // Конец избыточной проверки
+                
+                // Удаляем старые сообщения, оставляя только последние 50
+                // Убедимся, что метод существует в storage перед вызовом
+                if ('deleteOldMessages' in storage) {
+                  // ---> Лог перед удалением старых сообщений
+                  console.log(`[Storage] Deleting old messages for chat.id: ${chat.id}, keeping last 50.`);
+                    await storage.deleteOldMessages(chat.id, 50);
+                  console.log(`[Storage] Finished deleting old messages for chat.id: ${chat.id}.`);
+                } else {
+                    console.warn("storage.deleteOldMessages method not found!");
+                }
+                
+                // Обновляем список сообщений
+              // ---> Лог перед перезагрузкой сообщений
+              console.log(`[Storage] Reloading messages for chat.id: ${chat.id} after updates.`);
+                messages = await storage.listChatMessages(chat.id);
+              console.log(`[Storage] Reloaded ${messages.length} messages for chat.id: ${chat.id}.`);
+                needsUpdate = true;
+            } else {
+              // ---> Лог, если не было сохранено новых сообщений
+              console.log(`[Process] No new messages were saved for chat.id: ${chat.id} in this run.`);
+              }
+            } else {
+              console.error('Error from Telegram API:', historyResult.error);
+          }
+        } catch (error) {
+          console.error('Error fetching messages from Telegram:', error);
+          // Продолжаем выполнение и возвращаем имеющиеся сообщения
+        }
+      }
+      
+      // Создаем лог о запросе сообщений
+      await storage.createLog({
+        userId: user.id,
+        action: 'fetch_messages',
+        details: { chatId, count: messages.length, updated: needsUpdate },
+        ipAddress: req.ip
+      });
+      
+      res.json(messages);
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+      res.status(500).json({ message: 'Ошибка получения сообщений' });
+    }
+  });
+
+  // 13. Отправка сообщения в чат
+  app.post('/api/chats/:chatId/messages', isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const { chatId } = req.params;
+      const { message } = req.body;
+      
+      // Получаем чат из базы данных
+      const chat = await storage.getChatByIds(user.id, chatId);
+      
+      if (!chat) {
+        return res.status(404).json({ message: 'Чат не найден' });
+      }
+      
+      // Создаем новое сообщение
+      const currentTime = new Date();
+      const newMessage = await storage.createMessage({
+        chatId: chat.id,
+        messageId: `local_${Date.now()}`, // Локальный ID сообщения
+        telegramId: null, // У локальных сообщений нет telegram_id
+        senderId: user.id.toString(),
+        senderName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        text: message,
+        sentAt: currentTime,
+        timestamp: currentTime,
+        isOutgoing: true,
+        mediaType: null,
+        mediaUrl: null
+      });
+      
+      // Обновляем информацию о последнем сообщении в чате
+      await storage.updateChat(chat.id, {
+        lastMessageText: message,
+        lastMessageDate: currentTime
+      });
+      
+      // Создаем лог о событии
+      await storage.createLog({
+        userId: user.id,
+        action: 'message_sent',
+        details: { chatId: chat.id, messageId: newMessage.id },
+        ipAddress: req.ip
+      });
+      
+      res.json({ success: true, message: newMessage });
+    } catch (error) {
+      console.error('Error sending message:', error);
+      res.status(500).json({ message: 'Ошибка отправки сообщения' });
+    }
+  });
+
+  // Маршруты администратора
   app.get('/api/admin/users', isAdmin, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 20;
@@ -1657,43 +1516,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: 'Ошибка получения пользователей' });
     }
   });
-  
-  // 1.1 Получение данных пользователя по ID
-  app.get('/api/admin/users/:id', isAdmin, async (req, res) => {
+
+  app.get('/api/admin/sessions', isAdmin, async (req, res) => {
     try {
-      const userId = parseInt(req.params.id);
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = parseInt(req.query.offset as string) || 0;
       
-      // Получение пользователя
-      const user = await storage.getUser(userId);
+      const allSessions = await storage.listAllSessions(limit, offset);
+      const totalSessions = await storage.countActiveSessions();
       
-      if (!user) {
-        return res.status(404).json({ message: 'Пользователь не найден' });
-      }
-      
-      // Получение количества чатов пользователя
-      const userChats = await storage.listUserChats(userId, 1000);
-      
-      // Получение последних активных сессий
-      const userSessions = await storage.listUserSessions(userId);
-      
-      // Скрываем пароль из ответа
-      const { password, ...userData } = user;
-      
-      // Дополнительная информация
-      const enrichedData = {
-        ...userData,
-        chatsCount: userChats.length,
-        sessionsCount: userSessions.length
-      };
-      
-      res.json(enrichedData);
+      res.json({
+        sessions: allSessions,
+        pagination: {
+          total: totalSessions,
+          limit,
+          offset
+        }
+      });
     } catch (error) {
-      console.error('Admin user fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения информации о пользователе' });
+      console.error('Admin sessions fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения сессий' });
     }
   });
 
-  // 2. Получение статистики для админ-панели
+  app.get('/api/admin/logs', isAdmin, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const logs = await storage.listLogs(limit);
+      
+      res.json(logs);
+    } catch (error) {
+      console.error('Admin logs fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения логов системы' });
+    }
+  });
+
   app.get('/api/admin/stats', isAdmin, async (req, res) => {
     try {
       // Получение текущих метрик
@@ -1745,55 +1603,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // 3. Получение логов системы
-  app.get('/api/admin/logs', isAdmin, async (req, res) => {
+  // Получение информации о конкретном пользователе
+  app.get('/api/admin/users/:userId', isAdmin, async (req, res) => {
     try {
-      const limit = parseInt(req.query.limit as string) || 50;
+      const userId = parseInt(req.params.userId);
+      console.log(`[ADMIN API] Getting user details for ID: ${userId}`);
       
-      const logs = await storage.listLogs(limit);
-      
-      res.json(logs);
-    } catch (error) {
-      console.error('Admin logs fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения логов системы' });
-    }
-  });
-
-  // 4. Блокировка/разблокировка пользователя
-  app.post('/api/admin/users/:id/toggle-block', isAdmin, async (req, res) => {
-    try {
-      const userId = parseInt(req.params.id);
+      // Получение пользователя
       const user = await storage.getUser(userId);
       
       if (!user) {
         return res.status(404).json({ message: 'Пользователь не найден' });
       }
       
-      // Инвертируем статус активности
-      const updatedUser = await storage.updateUser(userId, {
-        isActive: !user.isActive
-      });
+      // Получение количества чатов пользователя
+      const userChats = await storage.listUserChats(userId, 1000);
       
-      // Создаем лог о действии
-      const adminUser = req.user as any;
-      await storage.createLog({
-        userId: adminUser.id,
-        action: user.isActive ? 'user_blocked' : 'user_unblocked',
-        details: { targetUserId: userId },
-        ipAddress: req.ip
-      });
+      // Получение последних активных сессий
+      const userSessions = await storage.listUserSessions(userId);
       
-      res.json(updatedUser);
+      // Скрываем пароль из ответа
+      const { password, ...userData } = user;
+      
+      // Дополнительная информация
+      const enrichedData = {
+        ...userData,
+        chatsCount: userChats.length,
+        sessionsCount: userSessions.length
+      };
+      
+      console.log(`[ADMIN API] User found, has ${userChats.length} chats and ${userSessions.length} sessions`);
+      res.json(enrichedData);
     } catch (error) {
-      console.error('Admin toggle block error:', error);
-      res.status(500).json({ message: 'Ошибка изменения статуса пользователя' });
+      console.error('Admin user fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения информации о пользователе' });
     }
   });
-
-  // 5. Получение сессий пользователя
-  app.get('/api/admin/users/:id/sessions', isAdmin, async (req, res) => {
+  
+  // Получение сессий конкретного пользователя
+  app.get('/api/admin/users/:userId/sessions', isAdmin, async (req, res) => {
     try {
-      const userId = parseInt(req.params.id);
+      const userId = parseInt(req.params.userId);
+      
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: 'Некорректный ID пользователя' });
+      }
+      
       const user = await storage.getUser(userId);
       
       if (!user) {
@@ -1804,15 +1659,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json(sessions);
     } catch (error) {
-      console.error('Admin sessions fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения сессий' });
+      console.error('Admin user sessions fetch error:', error);
+      res.status(500).json({ message: 'Ошибка получения сессий пользователя' });
     }
   });
   
-  // 5.1. Получение чатов пользователя (для администратора)
-  app.get('/api/admin/users/:id/chats', isAdmin, async (req, res) => {
+  // Получение чатов конкретного пользователя
+  app.get('/api/admin/users/:userId/chats', isAdmin, async (req, res) => {
     try {
-      const userId = parseInt(req.params.id);
+      const userId = parseInt(req.params.userId);
+      console.log(`[ADMIN API] Getting chats for user ID: ${userId}`);
+      
       const user = await storage.getUser(userId);
       
       if (!user) {
@@ -1821,6 +1678,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Получаем чаты пользователя
       const chats = await storage.listUserChats(userId);
+      console.log(`[ADMIN API] Found ${chats.length} chats for user ID: ${userId}`);
       
       res.json(chats);
     } catch (error) {
@@ -1829,529 +1687,755 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // 5.2. Получение сообщений чата пользователя (для администратора)
+  // Получение сообщений конкретного чата пользователя (АДМИН)
   app.get('/api/admin/users/:userId/chats/:chatId/messages', isAdmin, async (req, res) => {
     try {
       const userId = parseInt(req.params.userId);
       const chatId = parseInt(req.params.chatId);
+      const limit = parseInt(req.query.limit as string) || 20; // Добавляем limit
       
-      // Проверяем существование пользователя
+      if (isNaN(userId) || isNaN(chatId)) {
+        return res.status(400).json({ message: 'Некорректные параметры запроса' });
+      }
+      
       const user = await storage.getUser(userId);
       if (!user) {
         return res.status(404).json({ message: 'Пользователь не найден' });
       }
       
-      // Проверяем, что чат принадлежит пользователю
       const chat = await storage.getChatById(chatId);
-      if (!chat || chat.userId !== userId) {
-        return res.status(404).json({ message: 'Чат не найден или не принадлежит данному пользователю' });
+      if (!chat) {
+        return res.status(404).json({ message: 'Чат не найден' });
       }
       
-      // Получаем сообщения чата
-      const messages = await storage.listChatMessages(chatId);
-      
-      res.json(messages);
-    } catch (error) {
-      console.error('Admin user chat messages fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения сообщений чата пользователя' });
-    }
-  });
-  
-  // 6. Получение списка всех сессий
-  app.get('/api/admin/sessions', isAdmin, async (req, res) => {
-    try {
-      const limit = parseInt(req.query.limit as string) || 20;
-      const offset = parseInt(req.query.offset as string) || 0;
-      
-      const allSessions = await storage.listAllSessions(limit, offset);
-      const totalSessions = await storage.countActiveSessions();
-      
-      res.json({
-        sessions: allSessions,
-        pagination: {
-          total: totalSessions,
-          limit,
-          offset
-        }
-      });
-    } catch (error) {
-      console.error('Admin sessions fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения сессий' });
-    }
-  });
-  
-  // 7. Завершение сессии
-  app.post('/api/admin/sessions/:token/terminate', isAdmin, async (req, res) => {
-    try {
-      const { token } = req.params;
-      
-      await storage.deleteSession(token);
-      
-      // Создаем лог о завершении сессии
-      const adminUser = (req as any).adminUser || req.user as any;
-      
-      if (adminUser) {
-        await storage.createLog({
-          userId: adminUser.id,
-          action: 'session_terminated',
-          details: { sessionToken: token },
-          ipAddress: req.ip
-        });
+      if (chat.userId !== userId) {
+        return res.status(403).json({ message: 'Чат не принадлежит указанному пользователю' });
       }
       
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Admin terminate session error:', error);
-      res.status(500).json({ message: 'Ошибка завершения сессии' });
-    }
-  });
-  
-  // 8. Получение всех чатов для админа
-  app.get('/api/admin/chats', isAdmin, async (req, res) => {
-    try {
-      const limit = parseInt(req.query.limit as string) || 20;
-      const offset = parseInt(req.query.offset as string) || 0;
+      // ---> НАЧАЛО: Копируем логику из /api/chats/:chatId/messages
       
-      // Получаем все чаты и их пользователей
-      const allChats = await storage.listAllChats(limit, offset);
-      const totalChats = await storage.countChats();
+      // Получаем сообщения чата из базы данных
+      let messages = await storage.listChatMessages(chatId);
+      let needsUpdate = false;
       
-      // Для каждого чата добавляем информацию о количестве сообщений
-      const enrichedChats = await Promise.all(
-        allChats.map(async (chat) => {
-          // Получаем сообщения для подсчета их количества
-          const chatMessages = await storage.listChatMessages(chat.id, 1000);
+      // Если сообщений нет или запрошено больше чем есть в базе, 
+      // получаем сообщения через MTProto API
+      if (messages.length < limit) {
+        console.log(`[Admin][Chat ${chatId}] Messages in DB (${messages.length}) < limit (${limit}). Fetching from Telegram.`);
+        try {
+          // Получаем историю чата через MTProto API
+          // const { getChatHistory } = await import('./telegram-gram'); // Уже импортировано
           
-          return {
-            ...chat,
-            messagesCount: chatMessages.length
-          };
-        })
-      );
-      
-      res.json({
-        chats: enrichedChats,
-        pagination: {
-          total: totalChats,
-          limit,
-          offset
+          // Формируем правильный peer объект на основе информации о чате
+          let peer;
+          try {
+            const metadata = chat.metadata as any;
+            const chatType = metadata?.idType || (chat.type === 'channel' ? 'channel' : (chat.type === 'group' ? 'chat' : 'user'));
+            const chatIdStr = chat.chatId;
+            
+            if (!chatIdStr) throw new Error('Chat ID is missing');
+            
+            if (chatType === 'user') {
+              const accessHash = metadata?.accessHash || metadata?.telegramAccessHash || '0';
+              const tgUserId = metadata?.telegramUserId || (chatIdStr.startsWith('user_') ? chatIdStr.substring(5) : chatIdStr);
+              peer = { userId: BigInt(tgUserId), accessHash: BigInt(accessHash) };
+            } else if (chatType === 'chat') {
+              peer = { chatId: BigInt(chatIdStr) };
+            } else if (chatType === 'channel') {
+              const accessHash = metadata?.accessHash || metadata?.telegramAccessHash || '0';
+              peer = { channelId: BigInt(chatIdStr), accessHash: BigInt(accessHash) };
+            } else {
+              throw new Error(`Unknown chat type: ${chatType}`);
+            }
+            console.log(`[Admin][Chat ${chatId}] Created peer:`, peer);
+          } catch (error) {
+            console.error(`[Admin][Chat ${chatId}] Error creating peer:`, error);
+            throw new Error('Failed to create peer object'); // Прерываем выполнение, если peer не создан
+          }
+          
+          // Увеличиваем лимит сообщений до 100 для получения большего количества
+          const historyResult = await getChatHistory(db, peer, 100);
+          
+          if (historyResult.success) {
+            console.log(`[Admin][Chat ${chatId}] Retrieved ${historyResult.messages.length} messages from Telegram API`);
+            
+            const savedMessages = [];
+            for (const msg of historyResult.messages) {
+              if (msg._ === 'message' && msg.message) {
+                let senderName = 'Unknown';
+                let senderId = '';
+                
+                if (msg.from_id && msg.from_id._ === 'peerUser') {
+                  const fromUserId = msg.from_id.user_id;
+                  // Исправляем: проверяем, что historyResult.users существует и является массивом
+                  const sender = Array.isArray(historyResult.users) ? historyResult.users.find((u: any) => u.id === fromUserId) : null;
+                  if (sender) {
+                    senderName = `${sender.first_name || ''} ${sender.last_name || ''}`.trim();
+                    senderId = `user_${fromUserId}`;
+                  }
+                }
+                
+                const messageDate = new Date(msg.date * 1000);
+                const telegramMsgId = `${chat.chatId}_${msg.id}`;
+                
+                if ('getMessageByTelegramIdAndChatId' in storage) {
+                    const existingMessage = await storage.getMessageByTelegramIdAndChatId(telegramMsgId, chat.id);
+                    
+                    if (!existingMessage) {
+                      console.log(`[Admin][Storage] Attempting to create message telegramId: ${telegramMsgId} for chat.id: ${chat.id}`);
+                      try {
+                        const messageDataToSave = {
+                          chatId: chat.id,
+                          messageId: msg.id.toString(),
+                          telegramId: telegramMsgId,
+                          senderId: senderId,
+                          senderName: senderName,
+                          text: msg.message,
+                          sentAt: messageDate instanceof Date && !isNaN(messageDate.getTime()) ? messageDate : new Date(), 
+                          timestamp: new Date(),
+                          isOutgoing: msg.out || false,
+                          mediaType: msg.media ? msg.media._ : null, // media сохраняется из оригинального msg, если есть
+                          mediaUrl: null
+                        };
+                        const newMessage = await storage.createMessage(messageDataToSave);
+                        console.log(`[Admin][Storage] Successfully created message DB ID: ${newMessage.id}, telegramId: ${telegramMsgId}`);
+                        savedMessages.push(newMessage);
+                      } catch (createError) {
+                         console.error(`[Admin][Storage] Error creating message telegramId: ${telegramMsgId}:`, createError);
+                      }
+                    } else {
+                      console.log(`[Admin][Storage] Message telegramId: ${telegramMsgId} already exists. Skipping.`);
+                    }
+                } else {
+                     console.warn("[Admin][Storage] getMessageByTelegramIdAndChatId method not found!");
+                }
+              } else {
+                 console.log(`[Admin][Process] Skipping message ID ${msg.id}: Message text is empty or missing.`);
+              }
+            }
+            
+            if (savedMessages.length > 0) {
+              if ('updateChat' in storage && 'deleteOldMessages' in storage) { // Проверка наличия методов
+                  const latestMessage = savedMessages.reduce((latest, msg) => 
+                    (msg.sentAt && latest.sentAt && new Date(msg.sentAt) > new Date(latest.sentAt)) ? msg : latest, 
+                    savedMessages[0]
+                  );
+                  
+                  if (latestMessage && latestMessage.sentAt) { 
+                      console.log(`[Admin][Storage] Updating last message for chat.id: ${chat.id}`);
+                      await storage.updateChat(chat.id, {
+                        lastMessageDate: latestMessage.sentAt, 
+                        lastMessageText: latestMessage.text
+                      });
+                  }
+                  
+                  console.log(`[Admin][Storage] Deleting old messages for chat.id: ${chat.id}, keeping last 50.`);
+                  await storage.deleteOldMessages(chat.id, 50);
+              } else {
+                  console.warn("[Admin][Storage] updateChat or deleteOldMessages method not found!");
+              }
+              
+              console.log(`[Admin][Storage] Reloading messages for chat.id: ${chat.id} after updates.`);
+              messages = await storage.listChatMessages(chat.id);
+              console.log(`[Admin][Storage] Reloaded ${messages.length} messages.`);
+              needsUpdate = true;
+            } else {
+              console.log(`[Admin][Process] No new messages were saved for chat.id: ${chat.id} in this run.`);
+            }
+          } else {
+            console.error(`[Admin][Chat ${chatId}] Error from Telegram API:`, historyResult.error);
+            // Не прерываем выполнение, просто вернем что есть в базе
+          }
+        } catch (error) {
+          console.error(`[Admin][Chat ${chatId}] Error fetching messages from Telegram:`, error);
+          // Не прерываем выполнение, просто вернем что есть в базе
         }
+      } else {
+         console.log(`[Admin][Chat ${chatId}] Messages in DB (${messages.length}) >= limit (${limit}). Skipping Telegram fetch.`);
+      }
+      
+      // ---> КОНЕЦ: Скопированной логики
+      
+      console.log(`[Admin][Chat ${chatId}] Final messages count before response: ${messages.length}`);
+      
+      // Дополнительно выполним прямой SQL запрос (это уже было здесь)
+      try {
+        const messageCountResult = await db.execute(
+          sql`SELECT COUNT(*) as count FROM messages WHERE chat_id = ${chatId}`
+        );
+        const countValue = (messageCountResult.rows[0] as any)?.count || 0;
+        console.log(`[Admin] Final SQL count: Chat ${chatId} has ${countValue} messages in DB`);
+        
+        if (countValue > 0) {
+          const sampleMessageResult = await db.execute(
+            sql`SELECT * FROM messages WHERE chat_id = ${chatId} LIMIT 1`
+          );
+          const sampleMessage = sampleMessageResult.rows[0];
+          // console.log(`[Admin] Final SQL sample message:`, sampleMessage); // Можно закомментировать для чистоты логов
+        }
+      } catch (dbError) {
+        console.error(`[Admin] Error checking messages table (final check):`, dbError);
+      }
+      
+      // Проверяем и преобразуем сообщения перед отправкой
+      const formattedMessages = messages.map(msg => {
+        if (!msg.sentAt && msg.timestamp) msg.sentAt = msg.timestamp;
+        if (!msg.timestamp && msg.sentAt) msg.timestamp = msg.sentAt;
+        msg.isOutgoing = msg.senderId === userId.toString();
+        return msg;
       });
-    } catch (error) {
-      console.error('Admin chats fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения чатов' });
-    }
-  });
-  
-  // 9. Получение сообщений чата для админа
-  app.get('/api/admin/chats/:id/messages', isAdmin, async (req, res) => {
-    try {
-      const chatId = parseInt(req.params.id);
-      const limit = parseInt(req.query.limit as string) || 50;
       
-      const messagesData = await storage.listChatMessages(chatId, limit);
+      // Создаем лог о запросе сообщений администратором (новый лог)
+      await storage.createLog({
+        userId: (req as any).admin?.id || userId, // Используем ID админа, если есть
+        action: 'admin_fetch_messages',
+        details: { targetUserId: userId, chatId, count: messages.length, updated: needsUpdate },
+        ipAddress: req.ip
+      });
       
-      res.json(messagesData);
+      res.json(formattedMessages);
     } catch (error) {
       console.error('Admin chat messages fetch error:', error);
       res.status(500).json({ message: 'Ошибка получения сообщений чата' });
     }
   });
-
-  // 6. Авторизация администратора по логину и паролю
-  app.post('/api/admin/login', async (req, res) => {
-    try {
-      const { username, password } = req.body;
-      
-      if (!username || !password) {
-        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
-      }
-
-      // Проверка пользователя admin в базе
-      const user = await storage.getUserByUsername(username);
-      
+  
+  // Маршрут для входа админа по имени пользователя и паролю
+  app.post('/api/auth/admin-login', (req, res, next) => {
+    passport.authenticate('admin-local', (err: any, user: any, info: any) => {
+      if (err) { return next(err); }
       if (!user) {
-        // Создаем админа при первом входе, если его нет
-        if (username === 'admin' && password === 'admin') {
-          const newAdmin = await storage.createUser({
-            telegramId: 'admin',
-            username: 'admin',
-            firstName: 'Administrator',
-            password: 'admin',
-            isAdmin: true,
-            lastLogin: new Date()
-          });
-          
+        // Отправляем сообщение об ошибке от стратегии
+        return res.status(401).json({ message: info?.message || 'Ошибка аутентификации' });
+      }
+      // Явно логиним пользователя для создания сессии
+      req.logIn(user, async (loginErr) => {
+        if (loginErr) { return next(loginErr); }
+        
+        // Генерируем токен сессии для административного доступа
+        const sessionToken = randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 дней
+        
+        try {
           // Создаем сессию для администратора
-          const sessionToken = randomBytes(32).toString('hex');
-          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
-          
           await storage.createSession({
-            userId: newAdmin.id,
+            userId: user.id,
             sessionToken,
             ipAddress: req.ip || null,
             userAgent: req.headers['user-agent'] || null,
             expiresAt
           });
           
+        // Логирование успешного входа
           await storage.createLog({
-            userId: newAdmin.id,
-            action: 'admin_created',
-            details: { username },
-            ipAddress: req.ip
-          });
-          
-          return res.json({
-            success: true,
-            user: {
-              id: newAdmin.id,
-              username: newAdmin.username,
-              isAdmin: newAdmin.isAdmin
-            },
-            sessionToken
-          });
-        }
-        
-        return res.status(401).json({ message: 'Неверное имя пользователя или пароль' });
-      }
-      
-      // Проверка пароля
-      if (user.password !== password) {
-        return res.status(401).json({ message: 'Неверное имя пользователя или пароль' });
-      }
-      
-      // Создаем сессию
-      const sessionToken = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
-      
-      await storage.createSession({
-        userId: user.id,
-        sessionToken,
-        ipAddress: req.ip || null,
-        userAgent: req.headers['user-agent'] || null,
-        expiresAt
-      });
-      
-      await storage.createLog({
-        userId: user.id,
-        action: 'admin_login',
-        details: { username },
-        ipAddress: req.ip
-      });
-      
-      res.json({
-        success: true,
-        user: {
-          id: user.id,
-          username: user.username,
-          isAdmin: user.isAdmin
-        },
-        sessionToken
-      });
-    } catch (error) {
-      console.error('Admin login error:', error);
-      res.status(500).json({ message: 'Ошибка авторизации' });
-    }
-  });
-
-  // 7. Изменение пароля администратора
-  app.post('/api/admin/change-password', isAdmin, async (req, res) => {
-    try {
-      const { currentPassword, newPassword } = req.body;
-      const user = req.user as any;
-      
-      if (!currentPassword || !newPassword) {
-        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
-      }
-      
-      // Получаем актуальные данные пользователя
-      const dbUser = await storage.getUser(user.id);
-      
-      if (!dbUser) {
-        return res.status(404).json({ message: 'Пользователь не найден' });
-      }
-      
-      // Проверяем текущий пароль
-      if (dbUser.password !== currentPassword) {
-        return res.status(401).json({ message: 'Неверный текущий пароль' });
-      }
-      
-      // Обновляем пароль
-      await storage.updateUserPassword(user.id, newPassword);
-      
-      await storage.createLog({
-        userId: user.id,
-        action: 'admin_password_change',
-        details: { },
-        ipAddress: req.ip
-      });
-      
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Change password error:', error);
-      res.status(500).json({ message: 'Ошибка изменения пароля' });
-    }
-  });
-
-  // 8. Получение настроек системы
-  app.get('/api/admin/settings', isAdmin, async (req, res) => {
-    try {
-      const settingsList = await storage.listSettings();
-      res.json(settingsList);
-    } catch (error) {
-      console.error('Settings fetch error:', error);
-      res.status(500).json({ message: 'Ошибка получения настроек' });
-    }
-  });
-
-  // 9. Обновление настройки
-  app.post('/api/admin/settings', isAdmin, async (req, res) => {
-    try {
-      const { key, value, description } = req.body;
-      
-      if (!key || value === undefined) {
-        return res.status(400).json({ message: 'Отсутствуют обязательные параметры' });
-      }
-      
-      // Если обновляется токен Telegram-бота, используем специальную функцию
-      if (key === 'telegram_bot_token') {
-        const { updateBotToken } = await import('./telegram');
-        const success = await updateBotToken(value);
-        
-        if (!success) {
-          return res.status(400).json({ message: 'Ошибка обновления токена бота' });
-        }
-        
-        // Используем userId из токена администратора или дефолтное значение 1
-        const userId = req.user ? (req.user as any).id : 1;
-        
-        // Создаем лог об обновлении токена
-        await storage.createLog({
-          userId: userId,
-          action: 'bot_token_updated',
-          details: { success },
-          ipAddress: req.ip
-        });
-        
-        return res.json({ key, value: '***HIDDEN***', description });
-      }
-      
-      // Для всех остальных настроек используем обычный метод
-      const setting = await storage.upsertSetting(key, value, description);
-      
-      // Используем userId из токена администратора или дефолтное значение 1
-      const userId = req.user ? (req.user as any).id : 1;
-      
-      await storage.createLog({
-        userId: userId,
-        action: 'setting_update',
-        details: { key, value },
-        ipAddress: req.ip
-      });
-      
-      res.json(setting);
-    } catch (error) {
-      console.error('Setting update error:', error);
-      res.status(500).json({ message: 'Ошибка обновления настройки' });
-    }
-  });
-  
-  // 10. Отправка тестового уведомления администратору
-  app.post('/api/admin/send-test-notification', isAdmin, async (req, res) => {
-    try {
-      // Получаем настройки уведомлений
-      const notificationsEnabled = await storage.getSettingValue("notifications_enabled");
-      const adminChatId = await storage.getSettingValue("admin_chat_id");
-      
-      // Проверяем наличие необходимых настроек
-      if (notificationsEnabled !== "true") {
-        return res.status(400).json({ message: 'Уведомления отключены в настройках' });
-      }
-      
-      if (!adminChatId) {
-        return res.status(400).json({ message: 'Не указан ID чата администратора' });
-      }
-      
-      // Импортируем функцию для отправки тестового уведомления
-      const { sendTestNotification } = await import('./telegram');
-      
-      // Отправляем тестовое уведомление
-      const success = await sendTestNotification(adminChatId);
-      
-      if (success) {
-        // Используем userId из токена администратора или дефолтное значение 1
-        const userId = req.user ? (req.user as any).id : 1;
-        
-        // Создаем лог об отправке тестового уведомления
-        await storage.createLog({
-          userId: userId,
-          action: 'test_notification_sent',
-          details: { adminChatId },
-          ipAddress: req.ip
-        });
-        
-        res.json({ success: true, message: 'Тестовое уведомление отправлено' });
-      } else {
-        throw new Error('Не удалось отправить тестовое уведомление');
-      }
-    } catch (error) {
-      console.error('Admin test notification error:', error);
-      res.status(500).json({ message: 'Ошибка отправки тестового уведомления' });
-    }
-  });
-  
-  // === МАРШРУТЫ ДЛЯ АВТОРИЗАЦИИ ЧЕРЕЗ QR КОД ===
-  
-  // 1. Создание QR кода для входа
-  app.post('/api/auth/qr/create', async (req, res) => {
-    try {
-      // Генерируем QR код через Telegram API
-      const result = await createQRLoginCode();
-      
-      if (!result.success) {
-        return res.status(500).json({ 
-          success: false,
-          message: result.error || 'Не удалось создать QR код' 
-        });
-      }
-      
-      // Создаем лог о создании QR кода
-      await storage.createLog({
-        userId: null,
-        action: 'qr_code_created',
-        details: { token: result.token },
-        ipAddress: req.ip
-      });
-      
-      return res.status(200).json({
-        success: true,
-        token: result.token,
-        url: result.url,
-        expires: result.expires
-      });
-    } catch (error: any) {
-      console.error('Error creating QR code:', error);
-      res.status(500).json({ 
-        success: false,
-        message: error.message || 'Ошибка создания QR кода' 
-      });
-    }
-  });
-  
-  // 2. Проверка статуса авторизации по QR коду
-  app.post('/api/auth/qr/check', async (req, res) => {
-    try {
-      const { token } = qrTokenSchema.parse(req.body);
-      
-      // Проверяем статус QR-авторизации
-      const result = await checkQRLoginStatus(token);
-      
-      if (result.success && result.user) {
-        // Пользователь успешно авторизовался через QR код
-        
-        // Проверяем, существует ли уже пользователь с таким Telegram ID
-        let user = await storage.getUserByTelegramId(result.user.id);
-        
-        if (!user) {
-          // Создаем нового пользователя
-          user = await storage.createUser({
-            telegramId: result.user.id,
-            username: result.user.username || `user_${result.user.id}`,
-            firstName: result.user.firstName || '',
-            lastName: result.user.lastName || '',
-            phoneNumber: result.user.phone || '',
-            isActive: true,
-            lastLogin: new Date()
-          });
-          
-          // Создаем лог о регистрации пользователя
-          await storage.createLog({
-            userId: user.id,
-            action: 'user_registered_qr',
-            details: { telegramId: result.user.id },
-            ipAddress: req.ip
-          });
-        }
-        
-        // Создаем сессию для пользователя
-        const sessionToken = randomBytes(48).toString('hex');
-        const session = await storage.createSession({
           userId: user.id,
-          sessionToken: sessionToken,
-          ipAddress: req.ip || null,
-          userAgent: req.headers['user-agent'] || null,
-          expiresAt: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)) // 30 дней
-        });
-        
-        // Авторизуем пользователя
-        req.login(user, (err) => {
-          if (err) {
-            return res.status(500).json({ message: 'Ошибка авторизации' });
-          }
-          
-          // Создаем лог о входе пользователя
-          storage.createLog({
-            userId: user.id,
-            action: 'user_login_qr',
-            details: { telegramId: user.telegramId },
-            ipAddress: req.ip
+          action: 'admin_login_password',
+          details: { username: user.username },
+          ipAddress: req.ip
           });
-          
-          // Отправляем информацию о пользователе
-          return res.status(200).json({
-            success: true,
-            user: {
-              id: user.id,
-              username: user.username,
-              firstName: user.firstName,
-              lastName: user.lastName,
-              isAdmin: user.isAdmin
-            },
+
+        // Отправляем информацию о пользователе и сессии
+        return res.json({
+          success: true,
+          user: {
+            id: user.id,
+            username: user.username,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            isAdmin: user.isAdmin,
+          },
+            // Отправляем токен сессии для использования в заголовке Admin-Authorization
             sessionToken
-          });
         });
-      } else {
-        // Если пользователь еще не авторизовался, возвращаем статус ожидания
-        return res.status(200).json({
-          success: false,
-          waiting: result.waiting || result.error === 'Waiting for QR code scan',
-          message: result.message || result.error || 'Ожидание сканирования QR кода'
+        } catch (error) {
+          console.error('Admin session creation error:', error);
+          return next(error);
+        }
+      });
+    })(req, res, next);
+  });
+
+  // Принудительное обновление чатов пользователя (только для админов)
+  app.post('/api/admin/users/:userId/update-chats', isAdmin, async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      if (isNaN(userId)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid userId'
         });
       }
-    } catch (error: any) {
-      console.error('Error checking QR login:', error);
-      res.status(500).json({ 
-        success: false,
-        message: error.message || 'Ошибка проверки QR авторизации' 
-      });
+
+      // Получаем telegramId пользователя
+      const user = await storage.getUser(userId);
+      if (!user || !user.telegramId) {
+        return res.status(404).json({
+          success: false,
+          error: 'User not found or has no Telegram ID'
+        });
+      }
+
+      // Используем req.adminUser вместо req.user, если он доступен,
+      // иначе используем req.user (для случая авторизации через сессию)
+      const adminId = (req as any).adminUser?.id || (req.user as any)?.id || 'unknown';
+      console.log(`Администратор ${adminId} запросил обновление чатов для пользователя ${userId} (telegramId: ${user.telegramId})`);
+      
+      // Получаем диалоги из Telegram API
+      try {
+        const tgDialogs = await getUserDialogs(db, 500);
+        if (!tgDialogs.success) {
+          return res.status(500).json({ 
+            success: false, 
+            error: `Ошибка при получении диалогов: ${tgDialogs.error}` 
+          });
+        }
+        
+        // Получаем существующие чаты пользователя
+        const existingChats = await storage.getUserChats(userId);
+        console.log(`Найдено ${existingChats.length} существующих чатов, получено ${tgDialogs.dialogs.length} диалогов`);
+        
+        // Счетчики для отчета
+        let updated = 0;
+        let created = 0;
+        
+        // Обработка полученных диалогов
+        for (const dialog of tgDialogs.dialogs) {
+          // Проверяем, что это личный чат (с пользователем)
+          if (dialog.type === 'User') {
+            // Получаем информацию о пользователе
+            const userInfo = tgDialogs.users.find((u: any) => u.id === dialog.peer.user_id.toString());
+            if (!userInfo) {
+              console.warn(`Не найдена информация о пользователе для диалога ${dialog.id}`);
+              continue;
+            }
+            
+            // Формируем имя пользователя
+            const chatName = dialog.title || `${userInfo.first_name || ''} ${userInfo.last_name || ''}`.trim() || userInfo.username || 'User';
+            
+            // Проверяем, существует ли уже такой чат в БД
+            const existingChat = existingChats.find(chat => 
+              chat.chatId === dialog.id || 
+              chat.chatId === `user_${dialog.peer.user_id}`
+            );
+            
+            const messageDate = new Date(dialog.lastUpdated || new Date().toISOString());
+            
+            if (existingChat) {
+              // Обновляем существующий чат
+              console.log(`GET /api/chats - Обновляем существующий чат: ${existingChat.id}, ${chatName}`);
+              await storage.updateChat(existingChat.id, {
+                chatId: dialog.id,
+                userId: userId,
+                title: chatName,
+                lastMessageText: dialog.lastMessage || existingChat.lastMessageText || '',
+                lastMessageDate: messageDate,
+                unreadCount: dialog.unreadCount || 0,
+                type: 'private',
+                metadata: {
+                  telegramUserId: dialog.peer.user_id.toString(),
+                  accessHash: dialog.accessHash || userInfo.access_hash || '0'
+                }
+              });
+              updated++;
+            } else {
+              // Создаем новый чат
+              console.log(`GET /api/chats - Создаем новый чат: ${dialog.id}, ${chatName}`);
+              await storage.createChat({
+                chatId: dialog.id,
+                userId: userId,
+                title: chatName,
+                lastMessageText: dialog.lastMessage || '',
+                lastMessageDate: messageDate,
+                unreadCount: dialog.unreadCount || 0,
+                type: 'private',
+                metadata: {
+                  telegramUserId: dialog.peer.user_id.toString(),
+                  accessHash: dialog.accessHash || userInfo.access_hash || '0'
+                }
+              });
+              created++;
+            }
+          }
+        }
+        
+        // Создаем лог о событии
+        await storage.createLog({
+          userId: userId,
+          action: 'admin_update_chats',
+          details: { 
+            adminId: adminId,
+            created,
+            updated,
+            total: tgDialogs.dialogs.length
+          }
+        });
+        
+        return res.status(200).json({
+          success: true,
+          message: `Обновлено ${updated} чатов, создано ${created} новых чатов`,
+          stats: {
+            existingChats: existingChats.length,
+            totalDialogs: tgDialogs.dialogs.length,
+            updated,
+            created
+          }
+        });
+        
+      } catch (error) {
+        console.error("Ошибка при обновлении чатов:", error);
+        return res.status(500).json({ success: false, error: "Ошибка сервера" });
+      }
+    } catch (error) {
+      console.error('Admin update chats error:', error);
+      return res.status(500).json({ success: false, error: 'Failed to update chats' });
     }
   });
 
-  // Тестовый эндпоинт для проверки сообщений без сохранения в БД
-  app.get("/api/test/messages", async (req, res) => {
+  // Обработчик ошибок (должен быть последним)
+  app.use((err: any, req: Request, res: Response, next: any) => {
+    console.error('Error:', err);
+    res.status(500).json({ message: 'Произошла ошибка' });
+  });
+
+  // Принудительное обновление сообщений чата для администратора
+  app.post('/api/admin/users/:userId/chats/:chatId/update-messages', isAdmin, async (req, res) => {
     try {
-      // Используем предопределенный chatId для тестов
-      const peer = { 
-        _: 'inputPeerUser', 
-        user_id: 777000, 
-        access_hash: '-7461882757481466307' 
-      };
+      const { userId, chatId } = req.params;
+      const user = await storage.getUserById(parseInt(userId));
+      if (!user) {
+        return res.status(400).json({ error: 'User not found' });
+      }
+
+      const chat = await storage.getChatById(parseInt(chatId));
+      if (!chat) {
+        return res.status(400).json({ error: 'Chat not found' });
+      }
+
+      // Исправляем: вызываем getClient с экземпляром db
+      const client = await telegramGram.getClient(db);
+      // const [client, telegramId] = await telegramGram.getClient(user.telegramId); // Удаляем старый вызов
       
-      // Получаем историю сообщений
-      const historyResult = await getChatHistory(peer, 10);
-      
-      res.json(historyResult);
-    } catch (error: any) {
-      console.error("Error in test messages endpoint:", error);
-      res.status(500).json({ 
-        success: false, 
-        error: error.message || "Unknown error"
+      if (!client) {
+        return res.status(400).json({ error: 'Failed to get telegram client' });
+      }
+
+      // Создаем правильный объект peer на основе информации о чате
+      let peer;
+      try {
+        console.log('Chat metadata:', chat.metadata);
+        console.log('Chat object:', JSON.stringify(chat, null, 2));
+        
+        // Приведем metadata к any, чтобы обойти проверки TypeScript
+        const metadata = chat.metadata as any;
+        
+        // Определяем тип чата
+        const chatType = metadata && metadata.idType ? metadata.idType : 
+                        (chat.type === 'channel' ? 'channel' : 
+                        (chat.type === 'group' ? 'chat' : 'user'));
+        
+        console.log(`Determined chat type: ${chatType}`);
+        
+        // Определяем идентификатор чата
+        const chatIdStr = chat.chatId;
+        
+        // Проверяем наличие chatId
+        if (!chatIdStr) {
+          return res.status(400).json({ error: 'Chat ID is missing or invalid' });
+        }
+        
+        // Создаем peer в зависимости от типа чата
+        if (chatType === 'user') {
+          // Для пользователей
+          const accessHash = metadata && metadata.accessHash ? metadata.accessHash : 
+                           (metadata && metadata.telegramAccessHash ? metadata.telegramAccessHash : '0');
+          
+          // Используем telegramUserId из metadata вместо chatId
+          const userId = metadata && metadata.telegramUserId ? metadata.telegramUserId : 
+                      (chatIdStr.startsWith('user_') ? chatIdStr.substring(5) : chatIdStr);
+          
+          console.log(`Creating user peer with userId: ${userId} and accessHash: ${accessHash}`);
+          
+          peer = {
+            userId: BigInt(userId), 
+            accessHash: BigInt(accessHash)
+          };
+          console.log('Created user peer:', peer);
+        } else if (chatType === 'chat') {
+          // Для групповых чатов
+          peer = {
+            chatId: BigInt(chatIdStr)
+          };
+          console.log('Created chat peer:', peer);
+        } else if (chatType === 'channel') {
+          // Для каналов
+          const accessHash = metadata && metadata.accessHash ? metadata.accessHash : 
+                           (metadata && metadata.telegramAccessHash ? metadata.telegramAccessHash : '0');
+          peer = {
+            channelId: BigInt(chatIdStr),
+            accessHash: BigInt(accessHash)
+          };
+          console.log('Created channel peer:', peer);
+        } else {
+          return res.status(400).json({ error: `Unknown chat type: ${chatType}` });
+        }
+      } catch (error) {
+        console.error('Error creating peer:', error);
+        return res.status(500).json({ error: 'Failed to create peer object' });
+      }
+
+      // Получаем историю чата с новым форматом peer
+      console.log('Requesting chat history with peer:', peer);
+      // Передаем правильные параметры для getChatHistory (db, peer)
+      // Здесь используем db для вызова функции
+      // Добавляем проверку на undefined перед toString()
+      console.log('Requesting chat history with peer:', {
+        userId: peer.userId ? peer.userId.toString() : 'undefined',
+        accessHash: peer.accessHash ? peer.accessHash.toString() : 'undefined'
       });
+      
+      const history = await telegramGram.getChatHistory(db, { 
+        // Передаем peer как есть, getChatHistory внутри разберется
+        ...peer 
+      });
+      
+      if (!history.success) {
+        console.error('Failed to update messages:', history.error);
+        return res.status(500).json({ error: 'Failed to update messages' });
+      }
+
+      // Обработка истории и обновление сообщений
+      const messages = await Promise.all(history.messages.map(async (msg: any) => {
+        try {
+          if (!msg.id) {
+            console.warn('Message without id', msg);
+            return null;
+          }
+
+          // Определяем, является ли сообщение исходящим
+          const isOutgoing = !!msg.out;
+          
+          // Определяем отправителя
+          const senderId = msg.fromId || 
+                        (isOutgoing ? userId.toString() : null);
+          
+          // Создаем запись о сообщении
+          const message = {
+            messageId: msg.id.toString(), // Используем существующее поле messageId
+            telegramId: msg.id.toString(), // Для обратной совместимости также заполняем telegramId
+            chatId: chat.id,
+            senderId: senderId,
+            senderName: isOutgoing ? user.firstName : chat.title,
+            text: msg.message || '',
+            timestamp: new Date(msg.date), // Используем дату из API
+            sentAt: new Date(msg.date), // Также заполняем поле sentAt
+            isOutgoing: isOutgoing,
+            metadata: JSON.stringify(msg)
+          };
+
+          // Создаем или обновляем сообщение в базе данных
+          return storage.createOrUpdateMessage(message);
+        } catch (e) {
+          console.error('Error processing message', e);
+          return null;
+        }
+      }));
+
+      // Фильтруем пустые сообщения и отправляем результат
+      const filteredMessages = messages.filter(Boolean);
+      return res.json({
+        success: true,
+        count: filteredMessages.length,
+        messages: filteredMessages
+      });
+    } catch (error) {
+      console.error('Failed to update messages:', error);
+      return res.status(500).json({ error: 'Failed to update messages' });
     }
   });
 
   // Создание HTTP сервера
-  const httpServer = createServer(app);
-
-  return httpServer;
+  const server = createServer(app);
+  
+  return server;
 }
+
+// Асинхронная функция для фоновой загрузки
+async function initiateBackgroundSync(userId: number, db: DbInstance, storage: IStorage) {
+  console.log(`[Background Sync] Starting for user ID: ${userId}`);
+  try {
+    // 1. Получаем пользователя и его telegramId
+    const user = await storage.getUser(userId);
+    if (!user || !user.telegramId) {
+      console.warn(`[Background Sync] User ${userId} not found or has no telegramId. Aborting.`);
+      return;
+    }
+    console.log(`[Background Sync] User ${userId} has telegramId: ${user.telegramId}`);
+
+    // 2. Получаем список диалогов из Telegram
+    const tgDialogs = await getUserDialogs(db, 100); // Берем первые 100 диалогов
+    if (!tgDialogs.success || !tgDialogs.dialogs || tgDialogs.dialogs.length === 0) {
+      console.warn(`[Background Sync] No dialogs received from Telegram for user ${userId}. Error: ${tgDialogs.error}`);
+      // Можно попытаться обновить чаты из БД, если они есть
+      const existingChats = await storage.getUserChats(userId);
+      if (existingChats.length > 0) {
+          console.log(`[Background Sync] Found ${existingChats.length} existing chats in DB for user ${userId}. Will try to update messages for them.`);
+          // Запускаем обновление сообщений для существующих чатов
+          await syncMessagesForChats(existingChats, db, storage);
+      } else {
+          console.log(`[Background Sync] No existing chats found in DB either for user ${userId}.`);
+      }
+      return; 
+    }
+    console.log(`[Background Sync] Received ${tgDialogs.dialogs.length} dialogs from Telegram for user ${userId}`);
+
+    // 3. Синхронизируем чаты с БД (обновляем/создаем)
+    const chatsToUpdate: Chat[] = []; // Собираем чаты для последующей загрузки сообщений
+    const existingChats = await storage.getUserChats(userId);
+    console.log(`[Background Sync] Found ${existingChats.length} existing chats in DB for comparison.`);
+
+    for (const dialog of tgDialogs.dialogs) {
+      if (dialog.type === 'User') { // Обрабатываем только личные чаты
+        const userInfo = tgDialogs.users?.find((u: any) => u.id === dialog.peer.user_id?.toString());
+        if (!userInfo) continue;
+
+        const chatName = dialog.title || `${userInfo.first_name || ''} ${userInfo.last_name || ''}`.trim() || userInfo.username || 'User';
+        const messageDate = new Date(dialog.lastUpdated || Date.now());
+        const metadata: { telegramUserId?: string | null, accessHash?: string | null } = {
+          telegramUserId: dialog.peer.user_id?.toString(),
+          accessHash: dialog.accessHash || userInfo.access_hash || '0'
+        };
+        
+        const chatData = {
+           chatId: dialog.id,
+           userId: userId,
+           title: chatName,
+           lastMessageText: dialog.lastMessage || '',
+           lastMessageDate: messageDate,
+           unreadCount: dialog.unreadCount || 0,
+           type: 'private' as const,
+           metadata: metadata
+        };
+
+        const existingChat = existingChats.find(c => c.chatId === dialog.id || (c.metadata && (c.metadata as any).telegramUserId === metadata.telegramUserId));
+
+        try {
+          if (existingChat) {
+            const updatedChat = await storage.updateChat(existingChat.id, chatData);
+            if(updatedChat) chatsToUpdate.push(updatedChat);
+            console.log(`[Background Sync] Updated chat ID ${existingChat.id} (${chatName})`);
+          } else {
+            const createdChat = await storage.createChat(chatData);
+            if(createdChat) chatsToUpdate.push(createdChat);
+            console.log(`[Background Sync] Created chat ID ${createdChat?.id} (${chatName})`);
+          }
+        } catch (syncError) {
+           console.error(`[Background Sync] Error syncing chat ${chatName}:`, syncError);
+        }
+      }
+    }
+
+    // 4. Запускаем загрузку сообщений для синхронизированных чатов
+    if (chatsToUpdate.length > 0) {
+      console.log(`[Background Sync] Initiating message sync for ${chatsToUpdate.length} chats...`);
+      await syncMessagesForChats(chatsToUpdate, db, storage);
+    }
+    
+    console.log(`[Background Sync] Finished for user ID: ${userId}`);
+
+  } catch (error) {
+    console.error(`[Background Sync] Error for user ID ${userId}:`, error);
+  }
+}
+
+// Вспомогательная функция для загрузки сообщений для списка чатов
+async function syncMessagesForChats(chats: Chat[], db: DbInstance, storage: IStorage) {
+   for (const chat of chats) {
+      if (!chat || !chat.id) continue; // Пропускаем невалидные чаты
+      console.log(`[Background Sync] Processing messages for chat ID: ${chat.id} (${chat.title})`);
+      try {
+        let peer;
+        const metadata = chat.metadata as any;
+        const chatType = metadata?.idType || (chat.type === 'channel' ? 'channel' : (chat.type === 'group' ? 'chat' : 'user'));
+        const chatIdStr = chat.chatId;
+        
+        if (!chatIdStr) throw new Error('Chat ID is missing');
+
+        // Создаем peer объект (логика взята из GET /messages)
+        if (chatType === 'user') {
+            const accessHash = metadata?.accessHash || metadata?.telegramAccessHash || '0';
+            const tgUserId = metadata?.telegramUserId || (chatIdStr.startsWith('user_') ? chatIdStr.substring(5) : chatIdStr);
+            if(!tgUserId) throw new Error('Telegram User ID is missing for user chat');
+            peer = { userId: BigInt(tgUserId), accessHash: BigInt(accessHash) };
+        } else if (chatType === 'chat') {
+            peer = { chatId: BigInt(chatIdStr) };
+        } else if (chatType === 'channel') {
+            const accessHash = metadata?.accessHash || metadata?.telegramAccessHash || '0';
+            peer = { channelId: BigInt(chatIdStr), accessHash: BigInt(accessHash) };
+        } else {
+            throw new Error(`Unknown chat type: ${chatType}`);
+        }
+        
+        // Получаем последнюю порцию сообщений (например, 50)
+        const historyResult = await getChatHistory(db, peer, 50); 
+
+        if (historyResult.success && historyResult.messages) {
+          console.log(`[Background Sync][Chat ${chat.id}] Received ${historyResult.messages.length} messages from Telegram.`);
+          let savedCount = 0;
+          for (const msg of historyResult.messages) {
+            if (msg.message) { // Сохраняем только если есть текст
+              const messageDate = new Date(msg.date);
+              const telegramMsgId = `${chat.chatId}_${msg.id}`;
+              const existing = await storage.getMessageByTelegramIdAndChatId(telegramMsgId, chat.id);
+              
+              if (!existing) {
+                let senderName = 'Unknown';
+                let senderId = '';
+                 // Определяем отправителя (упрощенно, т.к. users может не быть)
+                 if (msg.fromId) { 
+                     senderId = `user_${msg.fromId}`;
+                     // Попытка найти имя в метаданных чата, если это собеседник
+                     if (metadata?.telegramUserId === msg.fromId) {
+                         senderName = chat.title || senderId;
+                     } else {
+                        // TODO: Возможно, нужно загружать пользователей отдельно?
+                        senderName = senderId;
+                     }
+                 } else if (msg.out) { // Если исходящее, отправитель - владелец сессии
+                     // Используем данные пользователя из БД
+                    const ownerUser = await storage.getUser(chat.userId);
+                    senderId = ownerUser ? ownerUser.id.toString() : 'unknown_owner';
+                    senderName = ownerUser ? (ownerUser.firstName || ownerUser.username || senderId) : senderId;
+                 }
+                 
+                await storage.createMessage({
+                  chatId: chat.id,
+                  messageId: msg.id.toString(),
+                  telegramId: telegramMsgId,
+                  senderId: senderId,
+                  senderName: senderName,
+                  text: msg.message,
+                  sentAt: messageDate instanceof Date && !isNaN(messageDate.getTime()) ? messageDate : new Date(),
+                  timestamp: new Date(),
+                  isOutgoing: msg.out || false,
+                  mediaType: null, // Упрощенно, не обрабатываем медиа здесь
+                  mediaUrl: null
+                });
+                savedCount++;
+              }
+            }
+          }
+          if (savedCount > 0) {
+             console.log(`[Background Sync][Chat ${chat.id}] Saved ${savedCount} new messages.`);
+             // Опционально: обновить lastMessageDate/Text в чате
+          } else {
+             console.log(`[Background Sync][Chat ${chat.id}] No new messages to save.`);
+          }
+        } else {
+            console.warn(`[Background Sync][Chat ${chat.id}] Failed to get messages from Telegram: ${historyResult.error}`);
+        }
+      } catch(error) {
+        console.error(`[Background Sync][Chat ${chat.id}] Error processing messages:`, error);
+      }
+   }
+}
+

@@ -31,7 +31,7 @@ interface AuthContextProps {
   loginWithQR: (qrData: any) => Promise<boolean>;
   // Авторизация по телефону
   requestPhoneCode: (phoneNumber: string) => Promise<boolean>;
-  verifyPhoneCode: (phoneNumber: string, code: string) => Promise<{ success: boolean; requirePassword: boolean; isNewUser: boolean }>;
+  verifyPhoneCode: (phoneNumber: string, code: string) => Promise<boolean>;
   setupPassword: (phoneNumber: string, password: string, firstName?: string, lastName?: string, email?: string) => Promise<boolean>;
   loginWithPassword: (phoneNumber: string, password: string) => Promise<boolean>;
   // Общее
@@ -53,7 +53,7 @@ const AuthContext = createContext<AuthContextProps>({
   loginWithQR: async () => false,
   // Phone
   requestPhoneCode: async () => false,
-  verifyPhoneCode: async () => ({ success: false, requirePassword: false, isNewUser: false }),
+  verifyPhoneCode: async () => false,
   setupPassword: async () => false,
   loginWithPassword: async () => false,
   // General
@@ -266,7 +266,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
   
   // Проверка кода подтверждения по телефону
-  const verifyPhoneCode = async (phone: string, code: string) => {
+  const verifyPhoneCode = async (phone: string, code: string): Promise<boolean> => {
     try {
       setLoading(true);
       const response = await apiRequest("POST", "/api/auth/phone/verify-code", {
@@ -277,35 +277,32 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       if (data.success) {
         setPhoneNumber(phone);
+        setUser(data.user);
+        setSessionToken(data.sessionToken);
+        localStorage.setItem("sessionToken", data.sessionToken);
+        
         toast({
-          title: "Код подтвержден",
-          description: data.isNewUser 
-            ? "Добро пожаловать! Установите пароль для завершения регистрации" 
-            : "Номер телефона подтвержден",
+          title: "Успешная авторизация",
+          description: "Вы вошли в систему.",
         });
-        return {
-          success: true,
-          requirePassword: data.requirePassword,
-          isNewUser: data.isNewUser,
-        };
+        
+        return true;
       }
-      return {
-        success: false,
-        requirePassword: false,
-        isNewUser: false,
-      };
-    } catch (error) {
+      
+      toast({
+        variant: "destructive",
+        title: "Ошибка проверки кода",
+        description: data.message || "Неверный код или истек срок действия",
+      });
+      return false;
+    } catch (error: any) {
       console.error("Phone code verification error:", error);
       toast({
         variant: "destructive",
         title: "Ошибка проверки кода",
-        description: "Неверный код или истек срок действия",
+        description: error?.message || "Произошла ошибка при проверке кода.",
       });
-      return {
-        success: false,
-        requirePassword: false,
-        isNewUser: false,
-      };
+      return false;
     } finally {
       setLoading(false);
     }

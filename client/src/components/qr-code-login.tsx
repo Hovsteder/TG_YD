@@ -6,6 +6,11 @@ import { Loader2, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/hooks/use-language";
 
+// Базовый URL для API запросов
+const API_BASE_URL = window.location.hostname === 'www.telegrame.io' 
+  ? '' // На продакшене используем относительные пути
+  : `http://${window.location.hostname}:5000`; // На локальной разработке используем полный URL
+
 interface QRCodeLoginProps {
   onClose: () => void;
   onLoginSuccess?: (userData: any) => void;
@@ -29,8 +34,8 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
   const createQRCode = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await fetch("/api/auth/qr/create", {
-        method: "POST",
+      const response = await fetch(`${API_BASE_URL}/api/auth/qr/create`, {
+        method: "GET",
         headers: {
           "Content-Type": "application/json",
         },
@@ -78,7 +83,7 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
         // Устанавливаем флаг проверки
         setCheckStatus(prev => ({ ...prev, checking: true }));
         
-        const response = await fetch("/api/auth/qr/check", {
+        const response = await fetch(`${API_BASE_URL}/api/auth/qr/check`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -105,7 +110,8 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
             onLoginSuccess(data);
           }
           
-          // Закрываем окно QR-кода
+          // Закрываем окно QR-кода и отменяем сессию
+          // (Нет нужды отменять сессию, поскольку она уже успешно использована)
           onClose();
         } else if (!data.waiting) {
           // Если ошибка и это не ожидание сканирования
@@ -132,6 +138,24 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
     setCheckStatus({ checking: false, interval });
   }, [checkStatus.interval, onClose, onLoginSuccess, toast]);
   
+  // Функция для отмены QR-сессии
+  const cancelQrSession = useCallback(async (token: string) => {
+    if (!token) return;
+    
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/qr/cancel`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token }),
+      });
+      console.log("QR session canceled successfully");
+    } catch (error) {
+      console.error("Error canceling QR session:", error);
+    }
+  }, []);
+  
   // Генерируем QR-код при монтировании компонента
   useEffect(() => {
     // Создаем QR-код только один раз при монтировании компонента
@@ -142,6 +166,11 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
       if (checkStatus.interval) {
         clearInterval(checkStatus.interval);
       }
+      
+      // Отменяем QR-сессию при закрытии компонента
+      if (qrData && qrData.token) {
+        cancelQrSession(qrData.token);
+      }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -151,13 +180,21 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
     createQRCode();
   };
 
+  // Обработчик закрытия окна
+  const handleClose = () => {
+    if (qrData && qrData.token) {
+      cancelQrSession(qrData.token);
+    }
+    onClose();
+  };
+
   return (
     <Card className="w-full max-w-md mx-auto">
       <CardHeader className="relative">
         <Button
           variant="ghost"
           size="icon"
-          onClick={onClose}
+          onClick={handleClose}
           className="absolute right-2 top-2"
         >
           <X className="h-4 w-4" />

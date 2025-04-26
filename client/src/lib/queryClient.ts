@@ -22,6 +22,14 @@ export async function apiRequest(
   if (sessionToken) {
     defaultHeaders["Authorization"] = `Bearer ${sessionToken}`;
   }
+  
+  // Добавляем токен администратора для админских запросов
+  if (url.startsWith("/api/admin")) {
+    const adminToken = localStorage.getItem("admin_token");
+    if (adminToken) {
+      defaultHeaders["Admin-Authorization"] = adminToken;
+    }
+  }
     
   const requestHeaders = headers 
     ? { ...defaultHeaders, ...headers } 
@@ -53,6 +61,15 @@ export const getQueryFn: <T>(options: {
     const sessionToken = localStorage.getItem("sessionToken");
     if (sessionToken) {
       headers["Authorization"] = `Bearer ${sessionToken}`;
+    }
+    
+    // Добавляем токен администратора для админских запросов
+    const url = queryKey[0] as string;
+    if (url.startsWith("/api/admin")) {
+      const adminToken = localStorage.getItem("admin_token");
+      if (adminToken) {
+        headers["Admin-Authorization"] = adminToken;
+      }
     }
     
     console.log("Query Request:", { url: queryKey[0], headers });

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation, useRoute, Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -76,6 +76,9 @@ export default function AdminUserDetailsPage() {
   const { toast } = useToast();
   const [adminData, setAdminData] = useState<any>(null);
   const [selectedChat, setSelectedChat] = useState<number | null>(null);
+  const [isUpdatingChats, setIsUpdatingChats] = useState(false);
+  const [isUpdatingMessages, setIsUpdatingMessages] = useState(false);
+  const queryClient = useQueryClient();
   
   // Проверка авторизации администратора
   useEffect(() => {
@@ -122,8 +125,109 @@ export default function AdminUserDetailsPage() {
   const { data: chatMessages, isLoading: messagesLoading } = useQuery({
     queryKey: [`/api/admin/users/${userId}/chats/${selectedChat}/messages`],
     enabled: !!adminData && userId > 0 && selectedChat !== null,
-    meta: { headers }
+    meta: { headers },
+    select: (data) => {
+      // Преобразуем поле isOutgoing в isIncoming для совместимости с компонентом чата
+      return data ? data.map((message: any) => ({
+        ...message,
+        isIncoming: message.isOutgoing === false // Если isOutgoing=false, то это входящее сообщение (isIncoming=true)
+      })) : [];
+    }
   });
+  
+  // Мутация для принудительного обновления чатов
+  const updateChatsMutation = useMutation({
+    mutationFn: async () => {
+      setIsUpdatingChats(true);
+      const response = await fetch(`/api/admin/users/${userId}/update-chats`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers
+        }
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Ошибка при обновлении чатов');
+      }
+      
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Чаты обновлены',
+        description: `${data.stats.updated} обновлено, ${data.stats.created} создано из ${data.stats.totalDialogs} найденных диалогов.`,
+        variant: 'success'
+      });
+      
+      // Обновляем список чатов
+      queryClient.invalidateQueries({ queryKey: [`/api/admin/users/${userId}/chats`] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Ошибка',
+        description: error.message || 'Не удалось обновить чаты',
+        variant: 'destructive'
+      });
+    },
+    onSettled: () => {
+      setIsUpdatingChats(false);
+    }
+  });
+  
+  // Мутация для принудительного обновления сообщений выбранного чата
+  const updateMessagesMutation = useMutation({
+    mutationFn: async (chatId: number) => {
+      setIsUpdatingMessages(true);
+      const response = await fetch(`/api/admin/users/${userId}/chats/${chatId}/update-messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers
+        }
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Ошибка при обновлении сообщений');
+      }
+      
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Сообщения обновлены',
+        description: `Добавлено ${data.totalMessages ? `${data.totalMessages} сообщений` : 'сообщения'}`,
+        variant: 'success'
+      });
+      
+      // Обновляем список сообщений
+      queryClient.invalidateQueries({ 
+        queryKey: [`/api/admin/users/${userId}/chats/${selectedChat}/messages`] 
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Ошибка',
+        description: error.message || 'Не удалось обновить сообщения',
+        variant: 'destructive'
+      });
+    },
+    onSettled: () => {
+      setIsUpdatingMessages(false);
+    }
+  });
+  
+  const handleUpdateChats = async () => {
+    // Сначала обновляем чаты
+    await updateChatsMutation.mutateAsync();
+    
+    // Если выбран чат, обновляем также его сообщения
+    if (selectedChat) {
+      await updateMessagesMutation.mutateAsync(selectedChat);
+    }
+  };
   
   // Форматирование даты
   const formatDate = (dateString: string) => {
@@ -294,8 +398,31 @@ export default function AdminUserDetailsPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Список чатов */}
               <Card className="col-span-1">
-                <CardHeader className="px-6 py-4 border-b border-gray-200">
+                <CardHeader className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                   <h3 className="font-medium">Список чатов</h3>
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={handleUpdateChats}
+                    disabled={isUpdatingChats || chatsLoading}
+                    className="flex items-center text-xs"
+                  >
+                    {isUpdatingChats ? (
+                      <>
+                        <span className="material-icons animate-spin mr-1" style={{ fontSize: "16px" }}>
+                          autorenew
+                        </span>
+                        Обновление...
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-icons mr-1" style={{ fontSize: "16px" }}>
+                          refresh
+                        </span>
+                        Обновить данные
+                      </>
+                    )}
+                  </Button>
                 </CardHeader>
                 <CardContent className="p-0">
                   {chatsLoading ? (
@@ -358,10 +485,15 @@ export default function AdminUserDetailsPage() {
               {/* Сообщения выбранного чата */}
               <Card className="col-span-1 lg:col-span-2">
                 <CardHeader className="px-6 py-4 border-b border-gray-200">
-                  <h3 className="font-medium">
+                  <h3 className="font-medium flex items-center">
                     {selectedChat === null
                       ? "Выберите чат для просмотра сообщений"
                       : userChats?.find((chat: Chat) => chat.id === selectedChat)?.title || "Сообщения"}
+                    {isUpdatingMessages && (
+                      <span className="material-icons animate-spin ml-2 text-sm text-neutral-gray">
+                        autorenew
+                      </span>
+                    )}
                   </h3>
                 </CardHeader>
                 <CardContent className="p-0">
@@ -394,13 +526,13 @@ export default function AdminUserDetailsPage() {
                   ) : (
                     <div className="p-4 space-y-4 max-h-[500px] overflow-auto">
                       {chatMessages.map((message: Message) => (
-                        <div key={message.id} className={`flex ${message.isOutgoing ? "justify-end" : "justify-start"}`}>
+                        <div key={message.id} className={`flex ${message.isIncoming ? "justify-start" : "justify-end"}`}>
                           <div 
                             className={`max-w-md rounded-lg p-3 ${
-                              message.isOutgoing ? "bg-telegram-light text-telegram-dark" : "bg-neutral-light"
+                              message.isIncoming ? "bg-neutral-light text-telegram-dark" : "bg-telegram-light"
                             }`}
                           >
-                            {message.senderName && !message.isOutgoing && (
+                            {message.senderName && !message.isIncoming && (
                               <p className="text-xs font-semibold mb-1 text-telegram-blue">
                                 {message.senderName}
                               </p>

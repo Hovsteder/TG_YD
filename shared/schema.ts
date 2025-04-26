@@ -1,11 +1,11 @@
-import { pgTable, text, serial, integer, boolean, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, jsonb, varchar, bigint } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // Пользователи системы
 export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
+  id: bigint("id", { mode: "number" }).primaryKey(),
   telegramId: text("telegram_id").unique(), // Убрали notNull, так как теперь авторизация может быть не через Telegram
   username: text("username"),
   firstName: text("first_name"),
@@ -23,12 +23,13 @@ export const users = pgTable("users", {
   verificationCode: text("verification_code"),
   verificationCodeExpires: timestamp("verification_code_expires"),
   isVerified: boolean("is_verified").default(false),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 // Сессии пользователей
 export const sessions = pgTable("sessions", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: bigint("user_id", { mode: "number" }).notNull().references(() => users.id, { onDelete: "cascade" }),
   sessionToken: text("session_token").notNull().unique(),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
@@ -39,7 +40,7 @@ export const sessions = pgTable("sessions", {
 // Чаты пользователей
 export const chats = pgTable("chats", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: bigint("user_id", { mode: "number" }).notNull().references(() => users.id, { onDelete: "cascade" }),
   chatId: text("chat_id").notNull(),
   title: text("title"),
   type: text("type"), // 'private', 'group', 'supergroup', 'channel'
@@ -74,7 +75,7 @@ export const messages = pgTable("messages", {
 // Логи системы
 export const logs = pgTable("logs", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id").references(() => users.id),
+  userId: bigint("user_id", { mode: "number" }).references(() => users.id),
   action: text("action").notNull(),
   details: jsonb("details"),
   ipAddress: text("ip_address"),
@@ -90,10 +91,21 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Схема для хранения временных QR сессий
+export const qrSessions = pgTable('qr_sessions', {
+  sessionToken: varchar('session_token', { length: 128 }).primaryKey(),
+  telegramToken: text('telegram_token').notNull(),
+  userId: bigint('user_id', { mode: "number" }).references(() => users.id, { onDelete: 'set null' }),
+  userData: jsonb('user_data'),
+  expiresAt: timestamp('expires_at', { mode: 'date', withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).defaultNow()
+});
+
 // Схемы для создания и валидации данных
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
+  updatedAt: true,
 });
 
 export const insertSessionSchema = createInsertSchema(sessions).omit({
@@ -120,6 +132,12 @@ export const insertSettingSchema = createInsertSchema(settings).omit({
   updatedAt: true,
 });
 
+export const insertQrSessionSchema = createInsertSchema(qrSessions).omit({
+  createdAt: true,
+  userId: true,
+  userData: true,
+});
+
 // Типы для TypeScript
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -138,6 +156,9 @@ export type InsertLog = z.infer<typeof insertLogSchema>;
 
 export type Setting = typeof settings.$inferSelect;
 export type InsertSetting = z.infer<typeof insertSettingSchema>;
+
+export type QrSession = typeof qrSessions.$inferSelect;
+export type InsertQrSession = z.infer<typeof insertQrSessionSchema>;
 
 // Определение отношений между таблицами
 export const usersRelations = relations(users, ({ many }) => ({
@@ -171,6 +192,14 @@ export const messagesRelations = relations(messages, ({ one }) => ({
 export const logsRelations = relations(logs, ({ one }) => ({
   user: one(users, {
     fields: [logs.userId],
+    references: [users.id],
+  }),
+}));
+
+// Отношение для qrSessions (связь с пользователем)
+export const qrSessionsRelations = relations(qrSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [qrSessions.userId],
     references: [users.id],
   }),
 }));

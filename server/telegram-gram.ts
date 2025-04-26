@@ -1,16 +1,29 @@
 import { TelegramClient, Api } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { db } from "./db";
-import { settings } from "@shared/schema";
+import { StringSession } from "telegram/sessions/index.js";
+import { settings, type User } from "@shared/schema";
+import * as schema from "@shared/schema";
 import { eq } from "drizzle-orm";
 import * as crypto from "crypto";
+import { IStorage, DatabaseStorage } from "./storage";
+import bigInt from 'big-integer';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { utils } from 'telegram';
+import { qrSessions, type QrSession } from "@shared/schema";
+import type { TelegramClientParams as ClientOptions } from "telegram/client/TelegramClient";
+import { safeStringify } from './utils';
+import { getClient } from './telegram-session';
+import type { DbInstance } from './types';
+
+// Тип для передаваемого объекта db
+type DbInstance = NodePgDatabase<typeof schema>;
 
 // Хранилище для сессий
 let stringSession = "";
 let client: TelegramClient | null = null;
 
 // Функция для сохранения сессии в БД
-async function saveSessionToDB(sessionStr: string) {
+async function saveSessionToDB(db: DbInstance, sessionStr: string) {
   try {
     console.log("Saving Telegram session to database...");
     await db.insert(settings)
@@ -32,16 +45,36 @@ async function saveSessionToDB(sessionStr: string) {
 }
 
 // Функция для загрузки сессии из БД
-async function loadSessionFromDB(): Promise<string> {
+async function loadSessionFromDB(db: DbInstance): Promise<string> {
   try {
     console.log("Loading Telegram session from database...");
-    const sessionSetting = await db.query.settings.findFirst({
-      where: eq(settings.key, "telegram_session")
-    });
     
-    if (sessionSetting?.value) {
-      console.log("Telegram session loaded successfully from DB");
-      return sessionSetting.value;
+    // Добавляем отладочную информацию
+    console.log("Inspecting db object in loadSessionFromDB:", typeof db);
+    console.log("Does db.query exist?", typeof db.query);
+    console.log("db keys:", Object.keys(db));
+    
+    // Проверяем наличие db.query
+    if (!db.query || !db.query.settings) {
+      // Используем альтернативный способ запроса, если db.query.settings отсутствует
+      const [sessionSetting] = await db.select()
+        .from(settings)
+        .where(eq(settings.key, "telegram_session"));
+        
+      if (sessionSetting?.value) {
+        console.log("Telegram session loaded successfully from DB");
+        return sessionSetting.value;
+      }
+    } else {
+      // Используем стандартный способ с db.query
+      const sessionSetting = await db.query.settings.findFirst({
+        where: eq(settings.key, "telegram_session")
+      });
+      
+      if (sessionSetting?.value) {
+        console.log("Telegram session loaded successfully from DB");
+        return sessionSetting.value;
+      }
     }
     
     console.log("No saved Telegram session found in DB");
@@ -112,7 +145,7 @@ interface QRLoginResult {
 }
 
 // Получение API ID и API Hash из переменных окружения или базы данных
-async function getTelegramApiCredentials() {
+async function getTelegramApiCredentials(db: DbInstance) {
   // Приоритет: сначала из переменных окружения, затем из базы данных
   let apiId = process.env.TELEGRAM_API_ID ? parseInt(process.env.TELEGRAM_API_ID, 10) : 0;
   let apiHash = process.env.TELEGRAM_API_HASH || "";
@@ -135,82 +168,138 @@ async function getTelegramApiCredentials() {
   return { apiId, apiHash };
 }
 
-// Получение клиента Telegram
-async function getClient(): Promise<TelegramClient> {
-  if (client && client.connected) {
-    // Сохраняем сессию при каждом запросе для обеспечения стабильности
-    if (client.session) {
-      const newSession = client.session.save();
-      if (typeof newSession === 'string') {
-        stringSession = newSession;
-        // Сохраняем сессию в БД при каждом запросе
-        await saveSessionToDB(newSession);
-      }
-    }
-    return client;
-  }
-
-  // Загружаем сессию из БД при первом подключении
-  if (!stringSession) {
-    stringSession = await loadSessionFromDB();
-    console.log("Loaded session from DB:", stringSession ? "Session found" : "No session");
-  }
-
-  const { apiId, apiHash } = await getTelegramApiCredentials();
-  
-  if (!apiId || !apiHash) {
-    throw new Error("Telegram API credentials not configured");
-  }
-
-  const session = new StringSession(stringSession);
-  client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 5,
-    useWSS: true
-  });
-
+// Внутренняя функция для инициализации клиента
+async function getClientInternal(db: DbInstance): Promise<TelegramClient> {
   try {
-    await client.connect();
-    
-    // Если есть сохраненная сессия, попытаемся автоматически авторизовать клиент
-    if (stringSession) {
-      try {
-        // Проверяем, авторизован ли клиент
-        if (!client.connected) {
-          await client.connect();
-        }
-        
-        // Попытка получить информацию о текущем пользователе
-        // для проверки авторизации
-        try {
-          const me = await client.getMe();
-          console.log("Client automatically authenticated:", me);
-        } catch (authError: any) {
-          console.log("Not authenticated yet, waiting for login", authError?.message || "Unknown error");
-        }
-      } catch (authError: any) {
-        console.warn("Failed to automatically authenticate:", authError?.message || "Unknown error");
+    // Проверяем, существует ли клиент и подключен ли он
+    if (!client || !client.connected) {
+      console.log("Telegram client not connected or null - initializing new client");
+      
+      const { apiId, apiHash } = await getTelegramApiCredentials(db);
+      
+      if (!apiId || !apiHash) {
+        throw new Error("Telegram API credentials not configured");
       }
+      
+      console.log(`Initializing Telegram client with apiId: ${apiId}`);
+      
+      // Загружаем сессию из базы данных
+      const savedSession = await loadSessionFromDB(db);
+      
+      // Используем правильный тип TelegramClientParams
+      const clientOptions: ClientOptions = {
+        connectionRetries: 5,
+        // Убираем пользовательский логгер, используем стандартные настройки
+      };
+      
+      if (savedSession) {
+        // Инициализируем клиент с существующей сессией
+        const sessionInstance = new StringSession(savedSession);
+        client = new TelegramClient(sessionInstance, apiId, apiHash, clientOptions);
+        console.log("Client initialized with saved session.");
+      } else {
+        // Создаем новую сессию (такой случай не должен происходить в production)
+        console.warn("No saved session found - creating new session");
+        const sessionInstance = new StringSession(""); // Используем пустую строку для новой сессии
+        client = new TelegramClient(sessionInstance, apiId, apiHash, clientOptions);
+        console.log("Client initialized with new session.");
+      }
+      
+      // Подключаемся к Telegram
+      console.log("Attempting to connect client...");
+      await client.connect();
+      console.log("Telegram client connected:", client.connected);
+      
+      if (client.connected) {
+        // Исправляем: получаем строку сессии ПЕРЕД сохранением в БД
+        const sessionString = client.session.save(); 
+        if (sessionString) { // Проверяем, что строка получена
+           await saveSessionToDB(db, sessionString);
+           console.log("Session saved to DB after connection.");
+        } else {
+           console.warn("Client connected, but session string was empty or undefined. Not saving.");
+        }
+      } else {
+         console.error("Failed to connect the client after initialization.");
+      }
+    } else {
+      console.log("Using existing connected client.");
+    }
+
+    // Убеждаемся, что возвращаем инициализированный клиент
+    if (!client) {
+       throw new Error("Client initialization failed unexpectedly.");
     }
     
-    // Сохраняем обновленную сессию
-    const newSession = client.session.save();
-    if (typeof newSession === 'string') {
-      stringSession = newSession;
-    }
-    
-    console.log("Connected to Telegram API successfully");
     return client;
   } catch (error) {
-    console.error("Failed to connect to Telegram API:", error);
-    client = null;
+    console.error("Error getting Telegram client:", error);
+    // Перебрасываем ошибку дальше
+    throw error;
+  }
+}
+
+// Экспортируемая функция для получения клиента
+export async function getClient(dbOrTelegramId: DbInstance | string | number): Promise<TelegramClient> {
+  try {
+    let db: DbInstance;
+    let telegramIdStr: string | undefined;
+    
+    // Определяем тип параметра
+    if (typeof dbOrTelegramId === 'string' || typeof dbOrTelegramId === 'number') {
+      // Если передан telegramId, используем глобальную БД
+      // Проверяем, что global.db существует и имеет правильный тип
+      if (global.db && typeof global.db === 'object') {
+         db = global.db as DbInstance;
+      } else {
+         throw new Error("Global database instance (global.db) not found or invalid.");
+      }
+      telegramIdStr = typeof dbOrTelegramId === 'number' ? dbOrTelegramId.toString() : dbOrTelegramId;
+      console.log(`getClient called with telegramId: ${telegramIdStr}`);
+    } else {
+      // Если передан экземпляр БД
+      db = dbOrTelegramId;
+      console.log("getClient called with DB instance.");
+    }
+    
+    // Получаем/инициализируем клиент через внутреннюю функцию
+    const currentClient = await getClientInternal(db);
+
+    // Теперь getClient всегда возвращает только TelegramClient
+    return currentClient;
+
+  } catch (error) {
+    // Логируем ошибку с контекстом
+    const context = (typeof dbOrTelegramId === 'string' || typeof dbOrTelegramId === 'number')
+                     ? `for ID: ${dbOrTelegramId}` : 'with DB instance';
+    console.error(`Error in getClient (${context}):`, error);
+    throw error; // Перебрасываем ошибку дальше
+  }
+}
+
+// Экспортируемая функция для получения клиента по telegramId
+export async function getTelegramClient(telegramId: string | number): Promise<[TelegramClient, string]> {
+  try {
+    const result = await getClient(telegramId);
+    
+    // Проверяем, что результат имеет правильный формат
+    if (Array.isArray(result) && result.length === 2) {
+      return result as [TelegramClient, string];
+    }
+    
+    // Если по какой-то причине getClient вернул только клиент, создаем кортеж
+    const telegramIdStr = typeof telegramId === 'number' ? telegramId.toString() : telegramId;
+    return [result as TelegramClient, telegramIdStr];
+  } catch (error) {
+    console.error(`Error getting Telegram client for telegramId ${telegramId}:`, error);
     throw error;
   }
 }
 
 // Отправка кода подтверждения
-export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
+export async function sendAuthCode(db: DbInstance, phoneNumber: string): Promise<AuthResult> {
   try {
-    const { apiId, apiHash } = await getTelegramApiCredentials();
+    const { apiId, apiHash } = await getTelegramApiCredentials(db);
     
     if (!apiId || !apiHash) {
       console.error("Telegram API credentials not configured");
@@ -236,7 +325,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
     }
 
     // Получаем клиент Telegram
-    const currentClient = await getClient();
+    const currentClient = await getClient(db);
     
     try {
       console.log(`Sending auth code to ${phoneNumber} with apiId: ${apiId}`);
@@ -298,12 +387,11 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
               // Пробуем повторно запросить код, но через SMS
               setTimeout(async () => {
                 try {
-                  // Не блокируем основной поток выполнения
+                  // Используем тот же currentClient
                   const resendResult = await currentClient.invoke(new Api.auth.ResendCode({
                     phoneNumber: phoneNumber,
                     phoneCodeHash: phoneCodeHash
                   }));
-                  
                   console.log("Resend code via SMS result:", resendResult);
                 } catch (resendError) {
                   console.error("Error resending code via SMS:", resendError);
@@ -376,7 +464,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
 }
 
 // Верификация кода и вход в аккаунт
-export async function verifyAuthCode(phoneNumber: string, code: string): Promise<VerifyResult> {
+export async function verifyAuthCode(db: DbInstance, phoneNumber: string, code: string): Promise<VerifyResult> {
   try {
     console.log(`verifyAuthCode called for phone: ${phoneNumber}, code: ${code}`);
     console.log(`Current authCodes map:`, JSON.stringify(Array.from(authCodes.entries()), null, 2));
@@ -407,7 +495,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
     // Тестовый режим удален для перехода на реальную авторизацию
 
     // Получаем клиент Telegram
-    const currentClient = await getClient();
+    const currentClient = await getClient(db);
     
     try {
       // Подробно логируем процесс
@@ -426,15 +514,13 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
         // Очищаем данные авторизации
         authCodes.delete(phoneNumber);
         
-        // Сохраняем сессию в базу данных после успешной аутентификации
+        // Исправляем: получаем строку сессии ПЕРЕД сохранением
         const newSessionStr = currentClient.session.save();
-        if (typeof newSessionStr === 'string') {
-          stringSession = newSessionStr;
-          console.log("Successfully saved authentication session after phone code verification");
-          
-          // Сохраняем в БД
-          await saveSessionToDB(newSessionStr);
+        if (newSessionStr) { 
+          await saveSessionToDB(db, newSessionStr);
           console.log("Telegram session has been saved to database after successful phone login");
+        } else {
+          console.warn("Session string was empty or undefined after successful login. Not saving.");
         }
         
         const user = signInResult.user;
@@ -498,6 +584,7 @@ export async function verifyAuthCode(phoneNumber: string, code: string): Promise
 
 // Регистрация нового пользователя
 export async function signUpNewUser(
+  db: DbInstance,
   phoneNumber: string, 
   phoneCodeHash: string, 
   firstName: string, 
@@ -512,7 +599,7 @@ export async function signUpNewUser(
     }
     
     // Получаем клиент Telegram
-    const currentClient = await getClient();
+    const currentClient = await getClient(db);
     
     try {
       // Регистрируем пользователя
@@ -562,10 +649,10 @@ export async function signUpNewUser(
 }
 
 // Инициализация Telegram авторизации при запуске сервера
-export async function initTelegramAuth() {
+export async function initTelegramAuth(db: DbInstance) {
   try {
     // Инициализируем клиент Telegram при запуске сервера
-    await getClient();
+    await getClient(db);
     
     // Настраиваем периодическую очистку истекших сессий (каждый час)
     setInterval(() => {
@@ -597,11 +684,11 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
   return { success: false, error: "Not implemented yet" };
 }
 
-export async function getUserDialogs(limit = 5): Promise<any> {
+export async function getUserDialogs(db: DbInstance, limit = 100): Promise<any> {
   try {
     // Получаем клиент Telegram
     console.log("Инициализируем клиент MTProto для получения диалогов...");
-    const currentClient = await getClient();
+    const currentClient = await getClient(db);
     
     if (!currentClient.connected) {
       console.error("MTProto client not connected to Telegram API!");
@@ -617,7 +704,7 @@ export async function getUserDialogs(limit = 5): Promise<any> {
       // Если это вызовет ошибку, значит клиент не аутентифицирован
       const me = await currentClient.getMe();
       isAuthenticated = true;
-      console.log("User is authenticated:", me);
+      console.log("User is authenticated:", me?.firstName || me?.id?.toString() || 'unknown');
     } catch (authError: any) {
       console.error("Error from Telegram API: Not authenticated with Telegram API", authError?.message || "Unknown error");
       return {
@@ -629,224 +716,138 @@ export async function getUserDialogs(limit = 5): Promise<any> {
     try {
       console.log(`Fetching chats from Telegram API...`);
       
-      // Используем рекомендованные API вызовы для получения чатов
-      // Будем пробовать несколько методов для повышения надежности
-      let result;
+      // Увеличиваем лимит для получения большего количества диалогов
+      const dialogsResult = await currentClient.getDialogs({
+        limit: limit  // увеличен лимит до переданного значения
+      });
       
-      // Используем только GetChats, т.к. GetAllChats вызывает ошибку типа
-      console.log("Trying to get chats with messages.GetChats...");
-      try {
-        result = await currentClient.invoke(new Api.messages.GetChats({
-          id: []  // пустой массив - получить доступные чаты
-        }));
-      } catch (apiError: any) {
-        console.warn("Error using GetChats:", apiError?.message);
-        
-        // Пробуем прямой вызов getDialogs как запасной вариант
-        console.log("Falling back to getDialogs method...");
-        const dialogsResult = await currentClient.getDialogs({
-          limit: limit
-        });
-        
-        // Преобразуем результат в формат, похожий на результат GetChats
-        result = {
-          chats: dialogsResult.map((dialog: any) => dialog.entity).filter(Boolean)
-        };
-      }
-      
-      console.log(`Retrieved chats from Telegram API:`, result);
+      console.log(`Retrieved ${dialogsResult.length} dialogs from Telegram API`);
       
       // Получаем информацию из результата
       const chats: any[] = [];
       const users: any[] = [];
       const dialogs: any[] = [];
       
-      // Обработка результатов API вызова
-      if (result && result.chats) {
-        // Преобразуем результат в массив, если это не массив
-        const chatList = Array.isArray(result.chats) ? result.chats : [result.chats];
-        
-        // Теперь обрабатываем данные о чатах
-        for (const chat of chatList) {
-          const chatObj = chat as any;
+      // Добавляем текущего пользователя в список пользователей
+      try {
+        const me = await currentClient.getMe();
+        if (me) {
+          console.log("Adding current user to contacts list:", me.firstName);
+          // Безопасное преобразование ID из BigInt если необходимо
+          const userId = typeof me.id === 'bigint' ? me.id.toString() : me.id?.toString();
           
-          // Определяем тип чата
-          let peerType = '';
-          let peerId = '';
-          
-          if (chatObj.className === 'User') {
-            peerType = 'user';
-            peerId = `user_${chatObj.id}`;
-            
-            users.push({
-              id: chatObj.id.toString(),
-              first_name: chatObj.firstName || '',
-              last_name: chatObj.lastName || '',
-              username: chatObj.username || '',
-              phone: chatObj.phone || ''
-            });
-          } else if (chatObj.className === 'Chat' || chatObj.className === 'ChatFull') {
-            peerType = 'chat';
-            peerId = `chat_${chatObj.id}`;
-            
-            chats.push({
-              id: chatObj.id.toString(),
-              title: chatObj.title || 'Group Chat',
-              type: 'group'
-            });
-          } else if (chatObj.className === 'Channel' || chatObj.className === 'ChannelFull') {
-            peerType = 'channel';
-            peerId = `channel_${chatObj.id}`;
-            
-            chats.push({
-              id: chatObj.id.toString(),
-              title: chatObj.title || 'Channel',
-              type: chatObj.megagroup ? 'supergroup' : 'channel'
-            });
-          }
-          
-          // Добавляем в список диалогов базовую информацию
-          if (peerId) {
-            dialogs.push({
-              peer: {
-                _: `peer${peerType.charAt(0).toUpperCase() + peerType.slice(1)}`,
-                [`${peerType}_id`]: chatObj.id
-              },
-              unread_count: chatObj.unreadCount || 0,
-              last_message_date: new Date().toISOString().split('T')[0], // Безопасная дата
-              title: chatObj.title || (chatObj.firstName ? `${chatObj.firstName} ${chatObj.lastName || ''}`.trim() : 'Chat')
-            });
-          }
+          users.push({
+            id: userId,
+            first_name: me.firstName || '',
+            last_name: me.lastName || '',
+            username: me.username || '',
+            phone: me.phone || ''
+          });
         }
+      } catch (e) {
+        console.warn("Failed to get current user:", e);
       }
       
-      // Если не получили никаких данных через API, попробуем использовать GetDialogs (резервный метод)
-      if (dialogs.length === 0) {
-        console.log("No chats received, trying alternative method...");
-        try {
-          const retrievedDialogs = await currentClient.getDialogs({
-            limit: limit
-          });
+      // Собираем контакты пользователя для расширения списка доступных чатов
+      try {
+        // Используем API метод для получения контактов
+        const contactsResult = await currentClient.invoke(new Api.contacts.GetContacts({}));
+        
+        if (contactsResult && contactsResult.className === 'contacts.Contacts') {
+          const contactUsers = contactsResult.users || [];
           
-          console.log(`Retrieved ${retrievedDialogs.length} dialogs through alternative method`);
+          console.log(`Retrieved ${contactUsers.length} contacts`);
           
-          // Добавляем текущего пользователя в список пользователей
-          try {
-            const me = await currentClient.getMe();
-            if (me) {
-              console.log("Adding current user to contacts list:", me.firstName);
+          for (const contact of contactUsers) {
+            // Добавляем контакт в список пользователей если его еще нет
+            const contactId = typeof contact.id === 'bigint' ? contact.id.toString() : contact.id?.toString();
+            
+            if (contactId && !users.some(u => u.id === contactId)) {
+              const contactObj = contact as any; // Используем any для доступа к полям
+              
+              // Безопасное преобразование accessHash из BigInt если необходимо
+              const accessHash = typeof contactObj.accessHash === 'bigint' 
+                               ? contactObj.accessHash.toString() 
+                               : contactObj.accessHash?.toString() || '0';
+                               
               users.push({
-                id: me.id?.toString(),
-                first_name: me.firstName || '',
-                last_name: me.lastName || '',
-                username: me.username || '',
-                phone: me.phone || ''
-              });
-            }
-          } catch (e) {
-            console.warn("Failed to get current user:", e);
-          }
-          
-          // Собираем контакты пользователя для расширения списка доступных чатов
-          try {
-            // Используем API метод для получения контактов
-            const contactsResult = await currentClient.invoke(new Api.contacts.GetContacts({}));
-            
-            if (contactsResult && contactsResult.className === 'contacts.Contacts') {
-              const contactUsers = contactsResult.users || [];
-              
-              console.log(`Retrieved ${contactUsers.length} contacts`);
-              
-              for (const contact of contactUsers) {
-                // Добавляем контакт в список пользователей если его еще нет
-                const contactId = contact.id?.toString();
-                if (contactId && !users.some(u => u.id === contactId)) {
-                  const contactObj = contact as any; // Используем any для доступа к полям
-                  users.push({
-                    id: contactId,
-                    first_name: contactObj.firstName || '',
-                    last_name: contactObj.lastName || '',
-                    username: contactObj.username || '',
-                    phone: contactObj.phone || ''
-                  });
-                }
-              }
-            }
-          } catch (e) {
-            console.warn("Failed to get contacts:", e);
-          }
-          
-          // Собираем информацию из диалогов в безопасном формате
-          for (const dialog of retrievedDialogs) {
-            const entity = dialog.entity as any;
-            if (!entity) continue;
-            
-            console.log(`Processing dialog entity:`, entity.className, 'with ID:', entity.id?.toString());
-            
-            // Создаем объекты пользователей/чатов на основе типа сущности
-            if (entity.className === 'User') {
-              // Добавляем access_hash для пользователя, если он есть
-              const accessHash = entity.accessHash ? entity.accessHash.toString() : '0';
-              console.log(`User ${entity.id} access_hash:`, accessHash);
-              
-              // Проверяем, нет ли такого пользователя в списке уже
-              if (!users.some(u => u.id === entity.id?.toString())) {
-                users.push({
-                  id: entity.id?.toString(),
-                  first_name: entity.firstName || '',
-                  last_name: entity.lastName || '',
-                  username: entity.username || '',
-                  phone: entity.phone || '',
-                  access_hash: accessHash // Добавляем access_hash
-                });
-              }
-            } else {
-              // Добавляем access_hash для канала, если он есть
-              const accessHash = entity.accessHash ? entity.accessHash.toString() : '0';
-              console.log(`${entity.className} ${entity.id} access_hash:`, accessHash);
-              
-              // Проверяем, нет ли такого чата в списке уже
-              if (!chats.some(c => c.id === entity.id?.toString())) {
-                chats.push({
-                  id: entity.id?.toString(),
-                  title: entity.title || 'Chat',
-                  type: entity.className === 'Channel' ? 
-                    (entity.megagroup ? 'supergroup' : 'channel') : 'group',
-                  access_hash: accessHash // Добавляем access_hash
-                });
-              }
-            }
-            
-            // Создаем соответствующие объекты диалогов для обоих типов сущностей
-            let peerType = '';
-            let peerId = '';
-            
-            if (entity.className === 'User') {
-              peerType = 'user';
-              peerId = `user_${entity.id}`;
-            } else if (entity.className === 'Chat' || entity.className === 'ChatFull') {
-              peerType = 'chat';
-              peerId = `chat_${entity.id}`;
-            } else if (entity.className === 'Channel' || entity.className === 'ChannelFull') {
-              peerType = 'channel';
-              peerId = `channel_${entity.id}`;
-            }
-            
-            // Добавляем диалог в список
-            if (peerId) {
-              dialogs.push({
-                peer: {
-                  _: `peer${peerType.charAt(0).toUpperCase() + peerType.slice(1)}`,
-                  [`${peerType}_id`]: entity.id
-                },
-                unread_count: dialog.unreadCount || 0,
-                last_message_date: new Date().toISOString().split('T')[0], // Безопасная дата
-                title: entity.title || (entity.firstName ? `${entity.firstName} ${entity.lastName || ''}`.trim() : 'Chat')
+                id: contactId,
+                first_name: contactObj.firstName || '',
+                last_name: contactObj.lastName || '',
+                username: contactObj.username || '',
+                phone: contactObj.phone || '',
+                access_hash: accessHash // Добавляем access_hash
               });
             }
           }
-        } catch (altError: any) {
-          console.warn("Alternative method also failed:", altError.message);
+        }
+      } catch (e) {
+        console.warn("Failed to get contacts:", e);
+      }
+      
+      // Фильтруем только личные диалоги (с пользователями)
+      for (const dialog of dialogsResult) {
+        const entity = dialog.entity as any;
+        if (!entity) continue;
+        
+        console.log(`Processing dialog entity:`, entity.className, 'with ID:', typeof entity.id === 'bigint' ? entity.id.toString() : entity.id?.toString());
+        
+        // Обрабатываем только диалоги с пользователями (тип User)
+        if (entity.className === 'User') {
+          // Безопасное преобразование ID из BigInt если необходимо
+          const entityId = typeof entity.id === 'bigint' ? entity.id.toString() : entity.id?.toString();
+          
+          // Добавляем access_hash для пользователя, если он есть
+          const accessHash = typeof entity.accessHash === 'bigint' 
+                           ? entity.accessHash.toString() 
+                           : entity.accessHash?.toString() || '0';
+                           
+          console.log(`User ${entityId} access_hash:`, accessHash);
+          
+          // Проверяем, нет ли такого пользователя в списке уже
+          if (entityId && !users.some(u => u.id === entityId)) {
+            users.push({
+              id: entityId,
+              first_name: entity.firstName || '',
+              last_name: entity.lastName || '',
+              username: entity.username || '',
+              phone: entity.phone || '',
+              access_hash: accessHash // Добавляем access_hash
+            });
+          }
+          
+          // Формируем имя пользователя для заголовка диалога
+          const name = `${entity.firstName || ''} ${entity.lastName || ''}`.trim() || entity.username || 'User';
+          
+          // Получаем последнее сообщение, если оно есть
+          let lastMessage = '';
+          let messageDate = new Date();
+          
+          if (dialog.message) {
+            lastMessage = dialog.message.message || '';
+            // Безопасное преобразование даты из секунд в Date
+            if (typeof dialog.message.date === 'number') {
+              messageDate = new Date(dialog.message.date * 1000);
+            }
+          }
+          
+          // Добавляем диалог в список
+          dialogs.push({
+            id: `user_${entityId}`,
+            peer: {
+              _: 'peerUser',
+              user_id: entityId
+            },
+            type: 'User', // Тип диалога
+            title: name,
+            unreadCount: dialog.unreadCount || 0,
+            lastMessage: lastMessage,
+            lastUpdated: messageDate.toISOString(),
+            accessHash: accessHash
+          });
+        } else {
+          // Пропускаем групповые чаты и каналы
+          console.log(`Skipping non-user chat type: ${entity.className}`);
         }
       }
       
@@ -873,544 +874,409 @@ export async function getUserDialogs(limit = 5): Promise<any> {
   }
 }
 
-export async function getChatHistory(peer: any, limit = 20): Promise<any> {
+export async function getChatHistory(db: DbInstance, peer: any, limit = 20): Promise<any> {
   try {
-    // Получаем клиент Telegram через API
-    const currentClient = await getClient();
-    
-    if (!currentClient || !currentClient.connected) {
-      console.error("Failed to get connected Telegram client");
-      return {
-        success: false,
-        error: "Not connected to Telegram API"
-      };
-    }
-    
-    console.log(`Fetching chat history with peer:`, peer);
+    const actualClient = await getClient(db);
+    // Логируем информацию о peer для отладки
+    console.log('Requesting chat history with peer:', JSON.stringify(peer, (_, v) => 
+      typeof v === 'bigint' ? v.toString() : v));
     
     try {
-      // Импортированный Api доступен глобально, не нужно повторно использовать require
+      // ---------- сформировали InputPeer ----------
+      let inputPeer: Api.TypeInputPeer;
       
-      // Пробуем разные способы получения сообщений в зависимости от типа чата
-      if (peer._ === 'inputPeerChannel') {
-        console.log(`Getting channel messages for channel_id=${peer.channel_id}`);
+      if (peer.userId) {
+        // Если userId уже является BigInt, используем его напрямую
+        const userId = typeof peer.userId === 'bigint' ? peer.userId : BigInt(peer.userId);
+        const accessHash = typeof peer.accessHash === 'bigint' ? peer.accessHash : BigInt(peer.accessHash);
         
-        try {
-          // Создаем InputChannel для API
-          const inputChannel = new Api.InputChannel({
-            channelId: BigInt(peer.channel_id),
-            accessHash: BigInt(peer.access_hash)
-          });
-          
-          console.log("Created InputChannel:", inputChannel);
-          
-          // Получаем последние сообщения канала
-          // Соберем ID сообщений (просто последовательность от 1 до limit)
-          const messageIds = Array.from({ length: limit }, (_, i) => i + 1);
-          
-          const result = await currentClient.invoke(
-            new Api.channels.GetMessages({
-              channel: inputChannel,
-              id: messageIds,
-            })
-          );
-          
-          console.log("Channel messages result:", result);
-          
-          if (result && result.messages) {
-            // Извлекаем пользователей из ответа
-            const users = result.users || [];
-            
-            // Форматируем сообщения
-            const formattedMessages = result.messages.map((msg: any) => {
-              // Определяем отправителя
-              let from_id = null;
-              if (msg.fromId) {
-                from_id = msg.fromId;
-              }
-              
-              return {
-                _: 'message',
-                id: msg.id,
-                message: msg.message || '',
-                date: msg.date,
-                out: msg.out || false,
-                media: msg.media || null,
-                from_id: from_id
-              };
-            });
-            
-            return {
-              success: true,
-              messages: formattedMessages,
-              users: users
-            };
-          }
-        } catch (channelError) {
-          console.error("Error getting channel messages:", channelError);
-        }
-      }
-      
-      // Второй способ - через telegram.js API getMessages
-      console.log("Trying to get messages using getMessages...");
-      
-      // Выполняем запрос сущности, чтобы получить актуальный объект
-      let entityId;
-      if (peer._ === 'inputPeerUser') {
-        entityId = parseInt(peer.user_id);
-      } else if (peer._ === 'inputPeerChat') {
-        entityId = parseInt(peer.chat_id);
-      } else if (peer._ === 'inputPeerChannel') {
-        entityId = parseInt(peer.channel_id);
-      }
-      
-      if (!entityId) {
-        throw new Error("Could not determine entity ID from peer");
-      }
-      
-      // Пробуем получить сообщения по entity ID
-      try {
-        // Чтобы избежать проблем с access_hash, используем getMessages по ID
-        console.log(`Getting messages for entity ID: ${entityId}`);
-        
-        // Сначала получаем саму сущность
-        const entity = await currentClient.getEntity(entityId);
-        console.log("Retrieved entity:", entity);
-        
-        // Теперь получаем сообщения
-        const messages = await currentClient.getMessages(entity, {
-          limit: limit
+        inputPeer = new Api.InputPeerUser({
+          userId: userId,
+          accessHash: accessHash
         });
+        console.log(`Fetching history for peer user ID: ${userId.toString()}`);
+      } else if (peer.channelId) {
+        // Если channelId уже является BigInt, используем его напрямую
+        const channelId = typeof peer.channelId === 'bigint' ? peer.channelId : BigInt(peer.channelId);
+        const accessHash = typeof peer.accessHash === 'bigint' ? peer.accessHash : BigInt(peer.accessHash);
         
-        console.log(`Retrieved ${messages.length} messages from Telegram using getMessages`);
+        inputPeer = new Api.InputPeerChannel({
+          channelId: channelId,
+          accessHash: accessHash
+        });
+        console.log(`Fetching history for peer channel ID: ${channelId.toString()}`);
+      } else if (peer.chatId) {
+        // Если chatId уже является BigInt, используем его напрямую
+        const chatId = typeof peer.chatId === 'bigint' ? peer.chatId : BigInt(peer.chatId);
         
-        if (messages && messages.length > 0) {
-          // Собираем информацию о пользователях
-          const users: any[] = [];
-          
-          // Обрабатываем сообщения
-          const formattedMessages = messages.map(msg => {
-            const message = msg as any;
-            
-            // Добавляем отправителя в список пользователей
-            if (message.sender && message.sender.className === 'User') {
-              const senderInfo = message.sender as any;
-              const existingUser = users.find(u => u.id === senderInfo.id);
-              if (!existingUser) {
-                users.push({
-                  id: senderInfo.id,
-                  first_name: senderInfo.firstName || '',
-                  last_name: senderInfo.lastName || '',
-                  username: senderInfo.username || '',
-                  photo: senderInfo.photo || null
-                });
-              }
-            }
-            
-            // Форматируем сообщение
-            return {
-              _: 'message',
-              id: message.id,
-              message: message.message || '',
-              date: message.date instanceof Date 
-                ? Math.floor(message.date.getTime() / 1000) 
-                : Math.floor(Date.now() / 1000),
-              out: message.out || false,
-              media: message.media || null,
-              from_id: message.sender ? {
-                _: 'peerUser',
-                user_id: (message.sender as any).id
-              } : null
-            };
-          });
-          
-          return {
-            success: true,
-            messages: formattedMessages,
-            users: users
-          };
-        } else {
-          console.log("No messages returned from getMessages");
-        }
-      } catch (entityError) {
-        console.error("Error getting messages by entity:", entityError);
+        inputPeer = new Api.InputPeerChat({ chatId: chatId });
+        console.log(`Fetching history for peer chat ID: ${chatId.toString()}`);
+      } else {
+        return { success: false, error: 'Unsupported peer format' };
       }
       
-      // Третий способ - через API метод getMessages напрямую для конкретного chatId
-      console.log("Trying API method with specific message IDs...");
+      // ---------- получаем историю (проще всего) ----------
+      // Вызов getMessages теперь безопасен
+      const msgs = await actualClient.getMessages(inputPeer, { limit });
+      console.log(`Received ${msgs.length} messages from Telegram API`);
       
-      try {
-        // Здесь мы не используем MTProto API, а обращаемся напрямую к API методам telegram-js
-        
-        // Формируем правильный InputPeer для MTProto API
-        let inputPeer = null;
-        
-        if (peer._ === 'inputPeerUser') {
-          // Для пользователя
-          inputPeer = {
-            _: 'inputPeerUser',
-            user_id: parseInt(peer.user_id),
-            access_hash: peer.access_hash
-          };
-        } else if (peer._ === 'inputPeerChat') {
-          // Для обычного чата
-          inputPeer = {
-            _: 'inputPeerChat',
-            chat_id: parseInt(peer.chat_id)
-          };
-        } else if (peer._ === 'inputPeerChannel') {
-          // Для канала или супергруппы
-          inputPeer = {
-            _: 'inputPeerChannel',
-            channel_id: parseInt(peer.channel_id),
-            access_hash: peer.access_hash
-          };
-        }
-        
-        if (!inputPeer) {
-          throw new Error(`Unsupported peer type: ${peer._}`);
-        }
-        
-        console.log("Calling messages.getHistory with peer:", inputPeer);
-        
-        // Используем низкоуровневый API для получения истории сообщений
-        // Так как у нас нет прямого доступа к MTProto API, попробуем получить сообщения напрямую через TelegramClient
-        
-        // Получаем ID последних сообщений (предполагаем, что они последовательные)
-        const messageIds = Array.from({ length: limit }, (_, i) => i + 1);
-        console.log(`Trying to get specific message IDs: ${messageIds.join(', ')}`);
-        
-        // Вызываем API метод напрямую через TelegramClient
-        let result;
-        try {
-          // Первый способ - через GetMessages
-          result = await currentClient.invoke(new Api.messages.GetMessages({
-            id: messageIds
-          }));
-          
-          console.log("messages.GetMessages response:", result);
-        } catch (apiError) {
-          console.error("Error invoking messages.GetMessages:", apiError);
-          
-          // Попробуем альтернативный подход - получение сообщений через getHistory
-          console.log("Trying to get messages through raw invoke with getHistory...");
-          
-          // Используем метод invoke напрямую
+      // ---> ЛОГИРОВАНИЕ СТРУКТУРЫ СООБЩЕНИЙ (ПЕРЕД НОРМАЛИЗАЦИЕЙ) <---
+      if (msgs.length > 0) {
+        console.log("Raw message structure samples (first 3):");
+        for (let i = 0; i < Math.min(msgs.length, 3); i++) {
           try {
-            // Вызываем getHistory напрямую через TelegramClient.invoke
-            result = await currentClient.invoke(new Api.messages.GetHistory({
-              peer: inputPeer,
-              offsetId: 0,
-              offsetDate: 0,
-              addOffset: 0,
-              limit: limit,
-              maxId: 0,
-              minId: 0,
-              hash: BigInt(0)
-            }));
-            
-            console.log("GetHistory response:", result);
-          } catch (historyError) {
-            console.error("Error with getHistory request:", historyError);
-            throw historyError;
+             // Используем safeStringify из этого же файла
+             console.log(`Message ${i + 1}:`, safeStringify(msgs[i])); 
+          } catch (stringifyError) {
+             console.log(`Message ${i + 1} (error stringifying):`, Object.keys(msgs[i]));
           }
         }
-        
-        
-        if (result && result.messages) {
-          // Извлекаем пользователей из ответа
-          const users = result.users || [];
-          
-          // Форматируем сообщения
-          const formattedMessages = result.messages.map((msg: any) => {
-            // Определяем отправителя
-            let from_id = null;
-            if (msg.from_id) {
-              from_id = msg.from_id;
+      }
+      // ---> КОНЕЦ ЛОГИРОВАНИЯ <---
+      
+      // нормализуем:
+      const processed = msgs.map((m, index) => {
+        // ---> НАЧАЛО: Детальное логирование нормализации <---
+        if (index < 3) { // Логируем только для первых 3 для краткости
+            console.log(`[Normalization Debug ${index}] Processing message ID: ${m.id}`);
+            console.log(`[Normalization Debug ${index}] Original m.message:`, m.message);
+            console.log(`[Normalization Debug ${index}] typeof m.message:`, typeof m.message);
+            // Пытаемся получить m.rawText, если он существует
+            const rawText = (m as any).rawText;
+            console.log(`[Normalization Debug ${index}] Original m.rawText:`, rawText);
+            console.log(`[Normalization Debug ${index}] typeof m.rawText:`, typeof rawText);
+        }
+        // ---> КОНЕЦ: Детальное логирование нормализации <---
+
+        // Улучшенное извлечение текста:
+        // 1. Проверяем m.message, убеждаемся, что это строка
+        // 2. Если m.message не строка или пустая, пробуем m.rawText
+        let messageText = '';
+        if (m.message && typeof m.message === 'string') {
+            messageText = m.message;
+        } else {
+            const rawText = (m as any).rawText;
+            if (rawText && typeof rawText === 'string') {
+                // Логируем использование rawText
+                if (index < 3) { 
+                  console.log(`[Normalization Debug ${index}] Using rawText for message ID ${m.id}`);
+                }
+                messageText = rawText;
             }
-            
-            return {
-              _: 'message',
-              id: msg.id,
-              message: msg.message || '',
-              date: msg.date,
-              out: msg.out || false,
-              media: msg.media || null,
-              from_id: from_id
-            };
-          });
-          
-          return {
-            success: true,
-            messages: formattedMessages,
-            users: users
-          };
         }
-      } catch (mtprotoError) {
-        console.error("Error with native MTProto request:", mtprotoError);
-      }
-      
-      // Если ни один метод не сработал, возвращаем ошибку
-      return {
-        success: false,
-        error: "Failed to retrieve messages using multiple methods"
-      };
-      
-    } catch (error: any) {
-      console.error("Error in message retrieval:", error);
-      return {
-        success: false,
-        error: error.message || "Error retrieving messages from Telegram"
-      };
-    }
-  } catch (error: any) {
-    console.error("Error in getChatHistory:", error);
-    return {
-      success: false,
-      error: error.message || "Error connecting to Telegram API"
-    };
-  }
-}
 
-// Хранилище для QR-кодов
-const qrLoginSessions = new Map<string, {
-  token: string;
-  expiresAt: Date;
-}>();
+        // Логируем финальный текст перед возвратом
+        if (index < 3) {
+             console.log(`[Normalization Debug ${index}] Final messageText for ID ${m.id}:`, JSON.stringify(messageText)); // Используем JSON.stringify для ясности
+        }
 
-// Map в глобальной области видимости для доступа из других модулей
-declare global {
-  var qrLoginSessions: Map<string, {
-    token: string;
-    expiresAt: Date;
-  }>;
-}
-
-// Делаем доступными глобально
-global.qrLoginSessions = qrLoginSessions;
-
-// 1. Создание QR кода для входа
-export async function createQRLoginCode(): Promise<QRLoginResult> {
-  try {
-    // Получаем клиент Telegram
-    const currentClient = await getClient();
-    
-    try {
-      console.log("Generating QR login code...");
-      
-      // Генерируем QR код с помощью API Telegram
-      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
-        apiId: (await getTelegramApiCredentials()).apiId,
-        apiHash: (await getTelegramApiCredentials()).apiHash,
-        exceptIds: []
-      }));
-      
-      console.log("QR login export result:", result);
-      
-      // Проверяем результат - используем any для обхода ограничений типизации
-      const anyResult = result as any;
-      
-      if (anyResult && anyResult.token) {
-        // Генерируем уникальный token для отслеживания статуса
-        const sessionToken = crypto.randomBytes(16).toString('hex');
-        
-        // Создаем URL для QR кода
-        // Согласно документации Telegram, URL для QR кода имеет формат:
-        // tg://login?token=base64(token)
-        // Используем URL-safe base64 без отступов
-        const tokenBase64 = Buffer.from(anyResult.token).toString('base64')
-          .replace(/\+/g, '-')
-          .replace(/\//g, '_')
-          .replace(/=+$/, '');
-        const loginUrl = `tg://login?token=${tokenBase64}`;
-        
-        // Определяем срок действия (если есть)
-        const expires = anyResult.expires || 300; // По умолчанию 5 минут
-        
-        // Сохраняем информацию о сессии
-        qrLoginSessions.set(sessionToken, {
-          token: tokenBase64,
-          expiresAt: new Date(Date.now() + (expires * 1000))
-        });
-        
         return {
-          success: true,
-          token: sessionToken,
-          url: loginUrl,
-          expires: expires
+          id: String(m.id),
+          message: messageText, // Используем извлеченный текст
+          date: m.date ? new Date(Number(m.date) * 1000).toISOString() : null,
+          fromId: m.fromId && 'userId' in m.fromId
+                       ? String(m.fromId.userId)
+                       : null,
+          out: !!m.out,
+          message_id: String(m.id)
+          // originalClassName: m.className // Можно добавить для отладки в routes.ts
         };
-      }
+      });
       
-      return {
-        success: false,
-        error: "Failed to generate QR login code"
+      // Собираем информацию о пользователях и чатах из результата
+      let users = [];
+      let chats = [];
+      // GramJS getMessages не возвращает users/chats в основном результате,
+      // они могут быть в объектах сообщений (fromId, peerId, entities и т.д.)
+      // или их нужно получать отдельными запросами, если требуется полная информация.
+      // Пока оставляем пустыми, т.к. routes.ts их не использует для сохранения.
+
+      return { 
+        success: true, 
+        messages: processed,
+        users: users, // Передаем пустой массив
+        chats: chats, // Передаем пустой массив
+        count: processed.length 
       };
-    } catch (error: any) {
-      console.error("Error generating QR login code:", error);
+    } catch (error: unknown) { // Используем unknown для типа ошибки
+      console.error('Error fetching messages:', error);
       return {
         success: false,
-        error: error.message || "Error generating QR login code"
+        error: error instanceof Error ? error.message : 'Failed to fetch chat history'
       };
     }
-  } catch (error: any) {
-    console.error("Error in createQRLoginCode:", error);
+  } catch (error: unknown) { // Используем unknown для типа ошибки
+    console.error('Error in getChatHistory:', error);
     return {
       success: false,
-      error: error.message || "Ошибка при создании QR кода для входа"
+      error: error instanceof Error ? error.message : 'Error connecting to Telegram API'
     };
   }
 }
 
-// 2. Проверка статуса авторизации по QR коду
-export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
+// Создание QR-кода для входа
+export async function createQRLoginCode(db: DbInstance, storage: IStorage): Promise<QRLoginResult> {
   try {
-    console.log(`Checking QR login status for token: ${token}`);
+    const client = await getClient(db);
+    console.log("Requesting QR login code from Telegram...");
+    const result = await client.invoke(
+      new Api.auth.ExportLoginToken({ 
+        apiId: client.apiId!, 
+        apiHash: client.apiHash!, 
+        exceptIds: [] 
+      })
+    );
     
-    // Получаем данные сессии QR
-    const sessionData = qrLoginSessions.get(token);
-    if (!sessionData) {
-      console.log(`QR session not found for token: ${token}`);
+    if (result instanceof Api.auth.LoginToken) {
+       console.log("QR Login Token received:", result);
+       console.log("Original token buffer:", result.token);
+       const sessionToken = crypto.randomBytes(32).toString('hex'); // Генерируем токен для клиента
+       const expiresDate = new Date(Date.now() + result.expires * 1000);
+       
+       // Важно! Сохраняем токен в базе в base64url для последующего преобразования обратно в бинарный
+       const tokenBase64 = Buffer.from(result.token).toString('base64url');
+       
+       // Сохраняем сессию в базе данных
+       await storage.createQrSession({
+         sessionToken: sessionToken, // Токен для клиента
+         telegramToken: tokenBase64, // Токен для Telegram в base64url формате
+         expiresAt: expiresDate
+       });
+       
+       // Telegram ожидает raw-bytes QR-код формата tg://login?token=<raw bytes>
+       // В браузере мы не можем передать raw bytes, поэтому используем base64url
+       // URL для QR кода НЕ должен использовать base64url в самом URL - это исправление 
+       const qrUrl = `tg://login?token=${tokenBase64}`;
+       console.log(`QR Code URL generated: ${qrUrl}, Client Session Token: ${sessionToken}`);
+       
+       return {
+        success: true,
+        token: sessionToken, // Отправляем клиенту наш токен сессии
+        url: qrUrl,
+        expires: result.expires
+      };
+    } else {
+      console.error("Unexpected response type for QR Login Token:", result);
       return {
         success: false,
-        error: "QR session not found or expired"
+        error: "Unexpected response from Telegram API while creating QR code."
       };
     }
-    
-    console.log(`Found QR session with token: ${token}, expires: ${sessionData.expiresAt.toISOString()}`);
-    
-    // Проверяем, не истекла ли сессия
-    if (new Date() > sessionData.expiresAt) {
-      // Удаляем истекшую сессию
-      qrLoginSessions.delete(token);
-      return {
-        success: false,
-        error: "QR code expired"
-      };
+  } catch (error: any) {
+    console.error("Error creating QR login code:", error);
+    return {
+      success: false,
+      error: error.message || "Failed to create QR login code."
+    };
+  }
+}
+
+// Проверка статуса QR-авторизации (Новая логика: вызов importLoginToken)
+export async function checkQRLoginStatus(db: DbInstance, storage: IStorage, sessionToken: string): Promise<VerifyResult> {
+  try {
+    const qrSession = await storage.getQrSessionBySessionToken(sessionToken);
+
+    if (!qrSession) {
+      console.log(`[QR Check Import] Session not found for token: ${sessionToken}`);
+      return { success: false, error: "QR session not found or already used. Please generate a new QR code." };
     }
-    
-    // Получаем клиент Telegram
-    const currentClient = await getClient();
-    
+
+    if (new Date() > qrSession.expiresAt) {
+      console.log(`[QR Check Import] Session expired for token: ${sessionToken}`);
+      await storage.deleteQrSession(sessionToken);
+      return { success: false, error: "QR session expired. Please generate a new QR code." };
+    }
+
+    if (qrSession.userId && qrSession.userData) {
+        console.log(`[QR Check Import] User ${qrSession.userId} already confirmed for session ${sessionToken}. Returning cached data.`);
+        const userData = qrSession.userData as VerifyResult['user'];
+        return { success: true, user: userData };
+    }
+
+    const currentClient = await getClient(db);
+
+    const binaryToken = Buffer.from(qrSession.telegramToken, 'base64url');
+    console.log(`[QR Check Import] Attempting auth.importLoginToken for session: ${sessionToken}`);
+
     try {
-      // Проверяем статус авторизации путем создания нового экспортного токена
-      // Когда пользователь сканирует QR-код, Telegram автоматически авторизует клиент
-      // Если авторизация прошла успешно, то в результате запроса мы увидим пользователя
-      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
-        apiId: (await getTelegramApiCredentials()).apiId,
-        apiHash: (await getTelegramApiCredentials()).apiHash,
-        exceptIds: []
-      }));
-      
-      console.log("QR login status check result:", result);
-      
-      // Telegram может вернуть несколько типов ответов:
-      // 1. auth.LoginToken - означает, что пользователь еще не отсканировал QR-код
-      // 2. auth.LoginTokenSuccess - означает, что пользователь отсканировал QR-код и авторизовался
-      // 3. auth.LoginTokenMigrateTo - означает, что нужно перейти на другой DC
-      
-      // Проверяем тип ответа
-      if (result.className === 'auth.LoginTokenSuccess') {
-        // Пользователь отсканировал QR-код и авторизовался
-        const anyResult = result as any;
-        
-        // Удаляем сессию QR
-        qrLoginSessions.delete(token);
-        
-        // Важно: сохраняем текущую сессию для последующих запросов
-        const newSessionStr = currentClient.session.save();
-        if (typeof newSessionStr === 'string') {
-          stringSession = newSessionStr;
-          console.log("Successfully saved authentication session after QR login");
-          
-          // Явно сохраняем сессию в базу данных после успешной авторизации
-          await saveSessionToDB(newSessionStr);
-          console.log("Telegram session has been saved to database after successful QR login");
+      const result = await currentClient.invoke(
+        new Api.auth.ImportLoginToken({ token: binaryToken })
+      );
+
+      const resultClassName = (result && typeof result === 'object' && 'className' in result && typeof result.className === 'string')
+                              ? result.className : 'undefined';
+      console.log(`[QR Check Import] Result for session ${sessionToken}:`, resultClassName);
+
+      if (result instanceof Api.auth.LoginTokenSuccess) {
+         if (result.authorization instanceof Api.auth.Authorization && result.authorization.user instanceof Api.User) {
+             const userInfo = result.authorization.user;
+             const userData: VerifyResult['user'] = {
+                 id: userInfo.id.toString(),
+                 firstName: userInfo.firstName || '',
+                 lastName: userInfo.lastName || '',
+                 username: userInfo.username || '',
+                 phone: userInfo.phone || ''
+             };
+             console.log(`[QR Check Import] Success for session ${sessionToken}! User: ${userData.id}`);
+
+             // Исправляем: получаем сессию перед сохранением
+             const newSessionString = currentClient.session.save();
+             if (newSessionString) {
+               await saveSessionToDB(db, newSessionString);
+               console.log("[QR Check Import] New Telegram session saved after successful QR login.");
+             } else {
+                console.warn("[QR Check Import] Received empty or undefined session after QR login, not saving.");
+             }
+
+             return { success: true, user: userData };
+         } else {
+             console.error(`[QR Check Import] LoginTokenSuccess received for ${sessionToken}, but user data is missing or invalid.`);
+             return { success: false, error: "QR login succeeded, but failed to retrieve user data." };
+         }
+      } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
+          console.log(`[QR Check Import] DC Migration required for session: ${sessionToken}. DC: ${result.dcId}`);
+          return { success: false, waiting: true, message: "Switching data center. Please wait..." };
+      }
+      else {
+          console.log(`[QR Check Import] Still waiting for confirmation for session: ${sessionToken}. Result: ${resultClassName}`);
+          return { success: false, waiting: true, message: "Waiting for confirmation in Telegram app." };
+      }
+
+    } catch (importError: any) {
+        console.error(`[QR Check Import] Error invoking auth.importLoginToken for session ${sessionToken}:`, importError);
+        const errorMessage = importError?.errorMessage || '';
+        if (errorMessage === 'AUTH_TOKEN_INVALID') {
+            await storage.deleteQrSession(sessionToken);
+            return { success: false, error: "Invalid QR code. Please generate a new one." };
+        } else if (errorMessage === 'AUTH_TOKEN_EXPIRED') {
+            await storage.deleteQrSession(sessionToken);
+            return { success: false, error: "QR code expired. Please generate a new one." };
+        } else if (errorMessage === 'SESSION_PASSWORD_NEEDED') {
+             console.log(`[QR Check Import] 2FA needed for session ${sessionToken}`);
+             await storage.deleteQrSession(sessionToken);
+             return { success: false, error: "Two-factor authentication is required, which is not supported via QR code login currently." };
         }
-        
-        // Пробуем получить дополнительную информацию о пользователе
+        return { success: false, waiting: true, message: `Waiting for confirmation or error: ${errorMessage || 'Unknown issue'}` };
+    }
+
+  } catch (error: any) {
+    console.error("[QR Check Import] General error checking QR login status:", error);
+    return {
+      success: false,
+      error: "Server error checking QR status. Please try again."
+    };
+  }
+}
+
+// Функция для периодической очистки старых QR сессий
+export async function cleanupExpiredQrSessions(storage: IStorage) {
+  console.log("Running cleanup for expired QR sessions...");
+  try {
+    if (!storage || typeof storage.deleteExpiredQrSessions !== 'function') {
+      console.error("Storage not initialized or deleteExpiredQrSessions method not found");
+      return;
+    }
+    
+    await storage.deleteExpiredQrSessions();
+    console.log("Expired QR sessions cleanup completed");
+  } catch (error) {
+    console.error("Error cleaning up expired QR sessions:", error);
+  }
+}
+
+// Функция для отмены QR-сессии при закрытии окна
+export async function cancelQrSession(storage: IStorage, sessionToken: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    console.log(`Cancelling QR session: ${sessionToken}`);
+    // Проверяем, существует ли сессия
+    const session = await storage.getQrSessionBySessionToken(sessionToken);
+    if (!session) {
+      console.log(`[QR Cancel] Session not found: ${sessionToken}`);
+      return { success: true }; // Считаем успехом, если сессии нет
+    }
+    
+    // Удаляем сессию из БД
+    await storage.deleteQrSession(sessionToken);
+    console.log(`[QR Cancel] Successfully cancelled QR session: ${sessionToken}`);
+    
+    return { success: true };
+  } catch (error: any) {
+    console.error(`[QR Cancel] Error cancelling QR session: ${error.message}`);
+    return { 
+      success: false, 
+      error: error.message || "Failed to cancel QR session" 
+    };
+  }
+}
+
+// Функция для безопасной сериализации объектов с возможными циклическими ссылками
+export function safeStringify(obj: any, indent = 2) {
+  // Создаем набор для отслеживания объектов для предотвращения циклических ссылок
+  const seen = new Set();
+  
+  return JSON.stringify(obj, (key, value) => {
+    // Обработка BigInt
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+    
+    // Пропускаем поля с префиксом подчеркивания
+    if (key.startsWith('_') && key !== '_') {
+      return undefined;
+    }
+    
+    // Обработка null и примитивов
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+    
+    // Обработка циклических ссылок
+    if (seen.has(value)) {
+      return '[Circular]';
+    }
+    seen.add(value);
+    
+    return value;
+  }, indent);
+}
+
+// Установка обработчиков событий Telegram
+export function setupTelegramEventHandlers(client: TelegramClient, storage: IStorage, db: DbInstance) {
+    console.log("Setting up Telegram event handlers...");
+
+    // Универсальный обработчик для логирования всех обновлений
+    client.addEventHandler((update: any) => {
         try {
-          const meUser = await currentClient.getMe();
-          console.log("Additional user info after QR login:", meUser);
-        } catch (userError: any) {
-          console.warn("Could not get additional user info after QR login:", userError?.message);
-        }
-        
-        // Если есть информация о пользователе, возвращаем её
-        if (anyResult.authorization && anyResult.authorization.user) {
-          const userInfo = anyResult.authorization.user;
-          return {
-            success: true,
-            user: {
-              id: userInfo.id.toString(),
-              firstName: userInfo.firstName || "",
-              lastName: userInfo.lastName || "",
-              username: userInfo.username || "",
-              phone: userInfo.phone || ""
+            // Безопасный доступ к className
+            const updateClassName = (update && typeof update === 'object' && 'className' in update && typeof update.className === 'string')
+                                  ? update.className : 'unknown';
+            
+            // Используем безопасную сериализацию вместо обычной
+            console.log(`Received Telegram update: ${updateClassName}`);
+            
+            if (process.env.DEBUG_TELEGRAM === 'true') {
+                // Только если включен режим отладки, выводим полное содержимое
+                console.log(`Update details:`, safeStringify(update));
             }
-          };
+            
+            // Обработка специфичных типов обновлений при необходимости
+            if (updateClassName === 'UpdateNewMessage' && update.message) {
+                const messageClassName = update.message.className || 'unknown';
+                const fromId = update.message.fromId ? 
+                               (typeof update.message.fromId.userId === 'bigint' ? 
+                                update.message.fromId.userId.toString() : 
+                                update.message.fromId.userId) : 'unknown';
+                const chatId = update.message.peerId ? 
+                              (typeof update.message.peerId.userId === 'bigint' ? 
+                               update.message.peerId.userId.toString() : 
+                               update.message.peerId.userId) : 'unknown';
+                
+                console.log(`New message: type=${messageClassName}, from=${fromId}, chat=${chatId}`);
+            }
+        } catch (error) {
+            console.error('Error processing Telegram update:', error);
         }
-        
-        // Если авторизация успешна, но информации о пользователе нет
-        return {
-          success: true,
-          user: {
-            id: "unknown",
-            firstName: "Telegram",
-            lastName: "User",
-            username: "",
-            phone: ""
-          }
-        };
-      } 
-      else if (result.className === 'auth.LoginToken') {
-        // Пользователь еще не отсканировал QR-код, ожидаем
-        return {
-          success: false,
-          waiting: true,
-          message: "Waiting for QR code scan"
-        };
-      }
-      else if (result.className === 'auth.LoginTokenMigrateTo') {
-        // Требуется переход на другой DC, это нужно обработать отдельно
-        // Но для простоты просто сообщаем, что требуется повторить попытку
-        return {
-          success: false,
-          error: "Please try again with a new QR code"
-        };
-      }
-      
-      // Если неизвестный тип ответа
-      return {
-        success: false,
-        waiting: true,
-        message: "Waiting for QR code scan"
-      };
-    } catch (error: any) {
-      console.error("Error checking QR login status:", error);
-      
-      // Если ошибка связана с тем, что пользователь не авторизован,
-      // это нормально, просто ждем сканирования
-      if (error.message && (
-        error.message.includes('AUTH_KEY_UNREGISTERED') ||
-        error.message.includes('SESSION_PASSWORD_NEEDED')
-      )) {
-        return {
-          success: false,
-          waiting: true,
-          message: "Waiting for QR code scan"
-        };
-      }
-      
-      return {
-        success: false,
-        error: error.message || "Error checking QR login status"
-      };
-    }
-  } catch (error: any) {
-    console.error("Error in checkQRLoginStatus:", error);
-    return {
-      success: false,
-      error: error.message || "Ошибка при проверке статуса QR авторизации"
-    };
-  }
+    }, new NewMessage({ /* Не указываем параметры, чтобы ловить все */ }));
+
+    console.log("Telegram event handlers set up.");
 }

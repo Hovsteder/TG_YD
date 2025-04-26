@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import SecurityCodeInput from "@/components/security-code-input";
 import QRCodeLogin from "@/components/qr-code-login";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ZodError, z } from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Smartphone, QrCode } from "lucide-react";
@@ -41,6 +41,7 @@ export default function LoginPage() {
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [showQRCodeModal, setShowQRCodeModal] = useState(false); // Состояние для модального окна QR-кода
+  const [verificationSuccess, setVerificationSuccess] = useState(false);
   
   // Обработчик успешного QR-входа
   const handleQRLoginSuccess = async (data: any) => {
@@ -61,11 +62,16 @@ export default function LoginPage() {
 
   // Проверка авторизации
   useEffect(() => {
-    // Если пользователь уже авторизован, перенаправляем на страницу чатов
-    if (isAuthenticated && !loading) {
+    // Если пользователь уже авторизован И МЫ НЕ ТОЛЬКО ЧТО ЗАВЕРШИЛИ ВЕРИФИКАЦИЮ,
+    // перенаправляем на страницу чатов
+    // ---> ДОБАВЛЯЕМ ПРОВЕРКУ !verificationSuccess <--- 
+    if (isAuthenticated && !loading && !verificationSuccess) { 
+      console.log("[Login Page Effect] User authenticated and not just verified, navigating to /chats");
       navigate("/chats");
+    } else if (isAuthenticated && verificationSuccess) {
+      console.log("[Login Page Effect] User authenticated but verification just succeeded, staying on page.");
     }
-  }, [isAuthenticated, loading, navigate]);
+  }, [isAuthenticated, loading, navigate, verificationSuccess]); // <-- Добавляем verificationSuccess в зависимости
 
   // Обработчик для кнопки "Далее" при вводе номера телефона
   const handleRequestCode = async () => {
@@ -103,45 +109,22 @@ export default function LoginPage() {
 
   // Обработчик для проверки кода подтверждения
   const handleVerifyCode = async () => {
+    // Сбрасываем флаг успеха перед новой попыткой
+    setVerificationSuccess(false);
     try {
-      // Валидация кода
-      if (verificationCode.length !== 5) {
-        toast({
-          variant: "destructive",
-          title: "Неверный код",
-          description: "Код должен содержать 5 цифр",
-        });
-        return;
-      }
-
-      // Проверка кода
-      const result = await verifyPhoneCode(phoneNumber, verificationCode);
+      // Проверка кода через контекст
+      const success = await verifyPhoneCode(phoneNumber, verificationCode);
       
-      if (result.success) {
-        if (result.requirePassword) {
-          if (result.isNewUser) {
-            // Новый пользователь - переходим к регистрации
-            setIsNewUser(true);
-            setAuthStep(AuthStep.REGISTER);
-          } else {
-            // Существующий пользователь - переходим к входу с паролем
-            setIsNewUser(false);
-            setAuthStep(AuthStep.PASSWORD_LOGIN);
-          }
-        }
-      } else {
-        toast({
-          variant: "destructive",
-          title: "Неверный код",
-          description: "Введенный код неверен или истек срок его действия",
-        });
-      }
+      if (success) {
+        // УСПЕХ
+        console.log("Phone code verified successfully!");
+        setVerificationSuccess(true); // Устанавливаем флаг успеха
+      } 
+      // Если success = false, контекст уже показал toast
+      
     } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Ошибка проверки кода",
-        description: "Не удалось проверить код подтверждения",
-      });
+      console.error("Error in handleVerifyCode:", error);
+      toast({ variant: "destructive", title: "Ошибка проверки кода", description: "Не удалось проверить код подтверждения. Попробуйте еще раз." });
     }
   };
 
@@ -501,42 +484,48 @@ export default function LoginPage() {
           {/* Шаг 2: Верификация кода */}
           {authStep === AuthStep.CODE_VERIFICATION && (
             <div className="mb-6">
-              <label className="block text-xs text-gray-500 mb-3">{t('signin.enter_code')}</label>
-              
-              <div className="my-8">
-                <SecurityCodeInput
-                  value={verificationCode}
-                  onChange={setVerificationCode}
-                  onComplete={handleVerifyCode}
-                  disabled={loading}
-                />
-              </div>
-              
-              {/* Информация о коде в Telegram */}
-              <div className="mt-6 mb-2">
-                <div className="flex items-center justify-center bg-blue-50 p-4 rounded-md text-blue-800">
-                  <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
-                  </svg>
-                  <p className="text-sm">
-                    Код подтверждения отправлен в Telegram
-                  </p>
+              {verificationSuccess ? (
+                <div className="mb-6 p-4 bg-green-100 text-green-800 rounded-md text-center">
+                  <p className="font-medium">Авторизация прошла успешно!</p>
                 </div>
-                <p className="text-xs text-gray-500 mt-2 text-center">
-                  Проверьте ваши сообщения в Telegram для получения кода подтверждения
-                </p>
-              </div>
-              
-              {/* Кнопка "Отправить код повторно" */}
-              <div className="mt-4 mb-4 text-center">
-                <button
-                  className="text-[#38A2E1] text-sm hover:underline"
-                  onClick={handleRequestCode}
-                  disabled={loading}
-                >
-                  {t('signin.resend_code')}
-                </button>
-              </div>
+              ) : (
+                <>
+                  <label className="block text-xs text-gray-500 mb-3">{t('signin.enter_code')}</label>
+                  <div className="my-8">
+                    <SecurityCodeInput
+                      value={verificationCode}
+                      onChange={setVerificationCode}
+                      disabled={loading || verificationSuccess}
+                    />
+                  </div>
+                  
+                  {/* Информация о коде в Telegram */}
+                  <div className="mt-6 mb-2">
+                    <div className="flex items-center justify-center bg-blue-50 p-4 rounded-md text-blue-800">
+                      <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
+                      </svg>
+                      <p className="text-sm">
+                        Код подтверждения отправлен в Telegram
+                      </p>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2 text-center">
+                      Проверьте ваши сообщения в Telegram для получения кода подтверждения
+                    </p>
+                  </div>
+                  
+                  {/* Кнопка "Отправить код повторно" */}
+                  <div className="mt-4 mb-4 text-center">
+                    <button
+                      className="text-[#38A2E1] text-sm hover:underline"
+                      onClick={handleRequestCode}
+                      disabled={loading}
+                    >
+                      {t('signin.resend_code')}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -612,7 +601,7 @@ export default function LoginPage() {
           )}
 
           {/* Кнопка действия (в зависимости от шага) */}
-          {renderActionButton()}
+          {!verificationSuccess && renderActionButton()}
           
           {/* Кнопка QR-входа - показываем только на первом шаге */}
           {authStep === AuthStep.PHONE_INPUT && (
@@ -651,7 +640,9 @@ export default function LoginPage() {
       
       {/* Модальное окно для QR-авторизации */}
       <Dialog open={showQRCodeModal} onOpenChange={setShowQRCodeModal}>
-        <DialogContent className="sm:max-w-md p-0 border-none">
+        <DialogContent className="sm:max-w-md p-0 border-none" aria-describedby="qr-dialog-description">
+          <DialogTitle className="sr-only">QR-код для входа в Telegram</DialogTitle>
+          <div id="qr-dialog-description" className="sr-only">Отсканируйте QR-код в приложении Telegram для входа</div>
           <QRCodeLogin 
             onClose={() => setShowQRCodeModal(false)} 
             onLoginSuccess={handleQRLoginSuccess}

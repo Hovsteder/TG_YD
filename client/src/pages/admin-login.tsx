@@ -27,7 +27,7 @@ export default function AdminLoginPage() {
     setLoading(true);
 
     try {
-      const response = await apiRequest("POST", "/api/admin/login", {
+      const response = await apiRequest("POST", "/api/auth/admin-login", {
         username,
         password,
       });

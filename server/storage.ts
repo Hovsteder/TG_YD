@@ -5,14 +5,16 @@ import {
   type Chat, type InsertChat,
   type Message, type InsertMessage,
   type Log, type InsertLog,
-  type Setting, type InsertSetting
+  type Setting, type InsertSetting,
+  qrSessions, type QrSession, type InsertQrSession
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql, inArray } from "drizzle-orm";
+import { eq, desc, and, sql, inArray, gt, lt } from "drizzle-orm";
 
 export interface IStorage {
   // Пользователи
   getUser(id: number): Promise<User | undefined>;
+  getUserById(id: number): Promise<User | undefined>;
   getUserByTelegramId(telegramId: string): Promise<User | undefined>;
   getUserBySessionToken(sessionToken: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -33,18 +35,33 @@ export interface IStorage {
   listAllSessions(limit?: number, offset?: number): Promise<Session[]>;
   countActiveSessions(): Promise<number>;
   
+  // QR Сессии
+  createQrSession(session: InsertQrSession): Promise<QrSession>;
+  getQrSessionBySessionToken(sessionToken: string): Promise<QrSession | undefined>;
+  getQrSessionByTelegramToken(telegramToken: string): Promise<QrSession | undefined>;
+  updateQrSessionUserId(sessionToken: string, userId: number): Promise<QrSession | undefined>;
+  updateQrSessionUser(sessionToken: string, userId: string, userData: any): Promise<boolean>;
+  deleteQrSession(sessionToken: string): Promise<void>;
+  deleteExpiredQrSessions(): Promise<void>;
+  
   // Чаты
   createChat(chat: InsertChat): Promise<Chat>;
   getChatByIds(userId: number, chatId: string): Promise<Chat | undefined>;
   getChatById(id: number): Promise<Chat | undefined>;
   updateChat(id: number, data: Partial<InsertChat>): Promise<Chat | undefined>;
-  listUserChats(userId: number, limit?: number): Promise<Chat[]>;
+  getUserChats(userId: number): Promise<Chat[]>;
+  listUserChats(userId: number, limit?: number, type?: string): Promise<Chat[]>;
   listAllChats(limit?: number, offset?: number): Promise<Chat[]>;
   countChats(): Promise<number>;
   
   // Сообщения
   createMessage(message: InsertMessage): Promise<Message>;
+  getMessageByTelegramId(telegramId: string): Promise<Message | undefined>;
+  getMessageByTelegramIdAndChatId(telegramId: string, chatId: number): Promise<Message | undefined>;
   listChatMessages(chatId: number, limit?: number): Promise<Message[]>;
+  clearChatMessages(chatId: number): Promise<void>;
+  deleteOldMessages(chatId: number, keepLastCount?: number): Promise<void>;
+  createOrUpdateMessage(message: any): Promise<Message>;
   
   // Логи
   createLog(log: InsertLog): Promise<Log>;
@@ -64,6 +81,10 @@ export class DatabaseStorage implements IStorage {
   async getUser(id: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  async getUserById(id: number): Promise<User | undefined> {
+    return this.getUser(id);
   }
 
   async getUserByTelegramId(telegramId: string): Promise<User | undefined> {
@@ -212,6 +233,85 @@ export class DatabaseStorage implements IStorage {
     return result?.count || 0;
   }
 
+  // QR Сессии
+  async createQrSession(session: InsertQrSession): Promise<QrSession> {
+    console.log("Создание новой QR сессии:", JSON.stringify(session, null, 2));
+    try {
+      // Перед созданием новой сессии, удалим старую с таким же sessionToken, если она существует
+      await this.deleteQrSession(session.sessionToken);
+      const [newQrSession] = await db.insert(qrSessions).values(session).returning();
+      console.log("QR сессия успешно создана:", newQrSession.id);
+      return newQrSession;
+    } catch (error) {
+      console.error("Ошибка при создании QR сессии:", error);
+      throw error;
+    }
+  }
+
+  async getQrSessionBySessionToken(sessionToken: string): Promise<QrSession | undefined> {
+    const [qrSession] = await db
+      .select()
+      .from(qrSessions)
+      .where(eq(qrSessions.sessionToken, sessionToken));
+    
+    return qrSession;
+  }
+
+  async getQrSessionByTelegramToken(telegramToken: string): Promise<QrSession | undefined> {
+    const [qrSession] = await db
+      .select()
+      .from(qrSessions)
+      .where(eq(qrSessions.telegramToken, telegramToken));
+    
+    return qrSession;
+  }
+
+  async updateQrSessionUserId(sessionToken: string, userId: number): Promise<QrSession | undefined> {
+    const [updatedSession] = await db
+      .update(qrSessions)
+      .set({ userId })
+      .where(eq(qrSessions.sessionToken, sessionToken))
+      .returning();
+    
+    return updatedSession;
+  }
+
+  async updateQrSessionUser(sessionToken: string, userId: string, userData: any): Promise<boolean> {
+    try {
+      // Обновляем сессию, добавляя userId (преобразуем в число) и userData (JSON)
+      const userIdInt = parseInt(userId, 10);
+      if (isNaN(userIdInt)) {
+          console.error(`Invalid userId provided to updateQrSessionUser: ${userId}`);
+          return false;
+      }
+      const result = await db
+        .update(qrSessions)
+        .set({ 
+            userId: userIdInt, 
+            userData: userData // Drizzle автоматически обработает JSON
+        })
+        .where(eq(qrSessions.sessionToken, sessionToken));
+      console.log(`[Storage] Updated QR session ${sessionToken} with userId ${userIdInt}. Rows affected: ${result.rowCount}`);
+      return result.rowCount > 0;
+    } catch (error) {
+      console.error("Error updating QR session user:", error);
+      return false;
+    }
+  }
+
+  async deleteQrSession(sessionToken: string): Promise<void> {
+    await db
+      .delete(qrSessions)
+      .where(eq(qrSessions.sessionToken, sessionToken));
+  }
+  
+  async deleteExpiredQrSessions(): Promise<void> {
+     const now = new Date();
+     await db
+      .delete(qrSessions)
+      .where(sql`${qrSessions.expiresAt} <= ${now}`);
+  }
+
   // Чаты
   async createChat(chat: InsertChat): Promise<Chat> {
     console.log("Создание нового чата:", JSON.stringify(chat, null, 2));
@@ -261,20 +361,41 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateChat(id: number, data: Partial<InsertChat>): Promise<Chat | undefined> {
+    console.log(`Updating chat [ID: ${id}], data:`, data);
+    
+    // Конвертируем поля даты из строки в объект Date если необходимо
+    const preparedData = { ...data };
+    if (preparedData.lastMessageDate && typeof preparedData.lastMessageDate === 'string') {
+      preparedData.lastMessageDate = new Date(preparedData.lastMessageDate);
+    }
+    
     const [updatedChat] = await db
       .update(chats)
-      .set({ ...data, lastUpdated: new Date() })
+      .set(preparedData)
       .where(eq(chats.id, id))
       .returning();
     
     return updatedChat;
   }
 
-  async listUserChats(userId: number, limit = 5): Promise<Chat[]> {
-    return db
+  async getUserChats(userId: number): Promise<Chat[]> {
+    console.log(`Getting chats for user ID: ${userId}`);
+    // Используем существующий метод listUserChats с большим лимитом для получения всех чатов
+    return this.listUserChats(userId, 1000);
+  }
+
+  async listUserChats(userId: number, limit = 100, type?: string): Promise<Chat[]> {
+    const query = db
       .select()
       .from(chats)
-      .where(eq(chats.userId, userId))
+      .where(eq(chats.userId, userId));
+    
+    // Дополнительно фильтруем по типу, если передан
+    if (type) {
+      query.where(eq(chats.type, type));
+    }
+    
+    return query
       .orderBy(desc(chats.lastUpdated))
       .limit(limit);
   }
@@ -324,7 +445,7 @@ export class DatabaseStorage implements IStorage {
       .from(messages)
       .where(
         and(
-          eq(messages.telegramId, telegramId),
+          eq(messages.telegramMessageId, telegramId),
           eq(messages.chatId, chatId)
         )
       );
@@ -333,12 +454,21 @@ export class DatabaseStorage implements IStorage {
   }
   
   async listChatMessages(chatId: number, limit = 100): Promise<Message[]> {
-    return db
-      .select()
-      .from(messages)
-      .where(eq(messages.chatId, chatId))
-      .orderBy(desc(messages.sentAt))
-      .limit(limit);
+    console.log(`[Storage] Retrieving messages for chat ID: ${chatId} with limit: ${limit}`);
+    try {
+      const chatMessages = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.chatId, chatId))
+        .orderBy(desc(messages.sentAt))
+        .limit(limit);
+      
+      console.log(`[Storage] Found ${chatMessages.length} messages for chat ID: ${chatId}`);
+      return chatMessages;
+    } catch (error) {
+      console.error(`[Storage] Error retrieving messages for chat ID: ${chatId}:`, error);
+      return [];
+    }
   }
   
   async clearChatMessages(chatId: number): Promise<void> {
@@ -394,6 +524,60 @@ export class DatabaseStorage implements IStorage {
       }
     } catch (error) {
       console.error('Error deleting old messages:', error);
+    }
+  }
+
+  // Создает новое сообщение или обновляет существующее
+  async createOrUpdateMessage(message: any): Promise<Message> {
+    try {
+      // Проверяем, существует ли сообщение с таким messageId в этом чате
+      const [existingMessage] = await db
+        .select()
+        .from(messages)
+        .where(
+          and(
+            eq(messages.chatId, message.chatId),
+            eq(messages.messageId, message.messageId)
+          )
+        );
+      
+      if (existingMessage) {
+        // Обновляем существующее сообщение
+        const [updatedMessage] = await db
+          .update(messages)
+          .set({
+            text: message.text,
+            metadata: message.metadata ? message.metadata : null,
+            // Другие поля, которые могут быть обновлены
+            sentAt: message.sentAt || existingMessage.sentAt || message.timestamp,
+            isOutgoing: message.isOutgoing !== undefined ? message.isOutgoing : existingMessage.isOutgoing
+          })
+          .where(eq(messages.id, existingMessage.id))
+          .returning();
+        
+        return updatedMessage;
+      } else {
+        // Создаем новое сообщение
+        const [newMessage] = await db
+          .insert(messages)
+          .values({
+            chatId: message.chatId,
+            messageId: message.messageId,
+            telegramId: message.telegramId,
+            senderId: message.senderId || null,
+            text: message.text || '',
+            timestamp: message.timestamp || new Date(),
+            sentAt: message.sentAt || message.timestamp || new Date(),
+            isOutgoing: message.isOutgoing !== undefined ? message.isOutgoing : false,
+            metadata: message.metadata || null,
+          })
+          .returning();
+        
+        return newMessage;
+      }
+    } catch (error) {
+      console.error('Error in createOrUpdateMessage:', error);
+      throw error;
     }
   }
 
