@@ -49,6 +49,14 @@ export const getQueryFn: <T>(options: {
     // Извлекаем заголовки из meta, если они есть
     const headers = meta?.headers ? { ...meta.headers } : {};
     
+    // Добавляем токен авторизации из localStorage, если он существует
+    const sessionToken = localStorage.getItem("sessionToken");
+    if (sessionToken) {
+      headers["Authorization"] = `Bearer ${sessionToken}`;
+    }
+    
+    console.log("Query Request:", { url: queryKey[0], headers });
+    
     const res = await fetch(queryKey[0] as string, {
       headers,
       credentials: "include",
