@@ -889,7 +889,7 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
     console.log(`Fetching chat history with peer:`, peer);
     
     try {
-      const Api = require("telegram").Api;
+      // Импортированный Api доступен глобально, не нужно повторно использовать require
       
       // Пробуем разные способы получения сообщений в зависимости от типа чата
       if (peer._ === 'inputPeerChannel') {
@@ -1081,11 +1081,41 @@ export async function getChatHistory(peer: any, limit = 20): Promise<any> {
         console.log(`Trying to get specific message IDs: ${messageIds.join(', ')}`);
         
         // Вызываем API метод напрямую через TelegramClient
-        const result = await currentClient.invoke(new Api.messages.GetMessages({
-          id: messageIds
-        }));
+        let result;
+        try {
+          // Первый способ - через GetMessages
+          result = await currentClient.invoke(new Api.messages.GetMessages({
+            id: messageIds
+          }));
+          
+          console.log("messages.GetMessages response:", result);
+        } catch (apiError) {
+          console.error("Error invoking messages.GetMessages:", apiError);
+          
+          // Попробуем альтернативный подход - получение сообщений через getHistory
+          console.log("Trying to get messages through raw invoke with getHistory...");
+          
+          // Используем метод invoke напрямую
+          try {
+            // Вызываем getHistory напрямую через TelegramClient.invoke
+            result = await currentClient.invoke(new Api.messages.GetHistory({
+              peer: inputPeer,
+              offsetId: 0,
+              offsetDate: 0,
+              addOffset: 0,
+              limit: limit,
+              maxId: 0,
+              minId: 0,
+              hash: BigInt(0)
+            }));
+            
+            console.log("GetHistory response:", result);
+          } catch (historyError) {
+            console.error("Error with getHistory request:", historyError);
+            throw historyError;
+          }
+        }
         
-        console.log("messages.getHistory response:", result);
         
         if (result && result.messages) {
           // Извлекаем пользователей из ответа
