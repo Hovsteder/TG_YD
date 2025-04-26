@@ -129,36 +129,7 @@ export async function sendAuthCode(phoneNumber: string): Promise<AuthResult> {
 
     console.log(`Attempting to send auth code to ${phoneNumber}`);
     
-    // ВРЕМЕННОЕ РЕШЕНИЕ: Для отладки с ограничением Telegram API
-    // Поскольку у нас есть ограничение FLOOD_WAIT от API Telegram, 
-    // мы создаем тестовый hash для тестирования процесса верификации кода
-    if (phoneNumber === "+905451844865") {
-      console.log(`Using debug mode for test phone number: ${phoneNumber}`);
-      // Формируем случайный phoneCodeHash 
-      const phoneCodeHash = crypto.randomBytes(8).toString('hex');
-      // Сохраняем код авторизации в нашей карте
-      authCodes.set(phoneNumber, {
-        phoneCodeHash,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 минут
-        attempts: 0,
-        // Для тестирования, сохраняем ожидаемый код
-        code: "64304" // Фиксированный код, который пользователь уже знает
-      });
-      
-      // Выводим информацию для отладки
-      console.log(`Created test auth data for ${phoneNumber}:`, {
-        phoneCodeHash,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-        code: "64304" // Отладочная информация - не передается клиенту
-      });
-      
-      return {
-        success: true,
-        phoneCodeHash,
-        timeout: 300,
-        codeType: 'debug'
-      };
-    }
+    // Код тестового режима удален для перехода на реальную авторизацию по QR коду
     
     // Проверяем, был ли уже создан phoneCodeHash для этого номера
     const existingAuthData = authCodes.get(phoneNumber);
