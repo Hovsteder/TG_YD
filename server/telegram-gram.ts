@@ -133,11 +133,11 @@ async function getClient(): Promise<TelegramClient> {
         try {
           const me = await client.getMe();
           console.log("Client automatically authenticated:", me);
-        } catch (authError) {
-          console.log("Not authenticated yet, waiting for login");
+        } catch (authError: any) {
+          console.log("Not authenticated yet, waiting for login", authError?.message || "Unknown error");
         }
-      } catch (authError) {
-        console.warn("Failed to automatically authenticate:", authError.message);
+      } catch (authError: any) {
+        console.warn("Failed to automatically authenticate:", authError?.message || "Unknown error");
       }
     }
     
@@ -924,6 +924,21 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
         
         // Удаляем сессию QR
         qrLoginSessions.delete(token);
+        
+        // Важно: сохраняем текущую сессию для последующих запросов
+        const newSessionStr = currentClient.session.save();
+        if (typeof newSessionStr === 'string') {
+          stringSession = newSessionStr;
+          console.log("Successfully saved authentication session after QR login");
+        }
+        
+        // Пробуем получить дополнительную информацию о пользователе
+        try {
+          const meUser = await currentClient.getMe();
+          console.log("Additional user info after QR login:", meUser);
+        } catch (userError: any) {
+          console.warn("Could not get additional user info after QR login:", userError?.message);
+        }
         
         // Если есть информация о пользователе, возвращаем её
         if (anyResult.authorization && anyResult.authorization.user) {
