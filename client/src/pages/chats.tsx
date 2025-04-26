@@ -230,7 +230,7 @@ export default function ChatsPage() {
                 <Button 
                   variant="ghost" 
                   size="icon" 
-                  onClick={() => refetchMessages()}
+                  onClick={handleRefreshMessages}
                   title={t("refresh_messages")}
                   disabled={isLoadingMessages}
                 >
