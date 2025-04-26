@@ -55,6 +55,8 @@ interface VerifyResult {
     phone: string;
   };
   error?: string;
+  waiting?: boolean; // Флаг ожидания сканирования QR-кода
+  message?: string; // Дополнительное сообщение о состоянии
 }
 
 // Интерфейс для результата QR-авторизации
@@ -633,18 +635,20 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
     
     try {
       // Проверяем статус авторизации по токену
-      const result = await currentClient.invoke(new Api.auth.ExportLoginToken({
-        apiId: (await getTelegramApiCredentials()).apiId,
-        apiHash: (await getTelegramApiCredentials()).apiHash,
-        exceptIds: []
+      // Мы НЕ создаем новый токен, а проверяем статус существующего
+      // Используем метод auth.importLoginToken для проверки
+      const result = await currentClient.invoke(new Api.auth.ImportLoginToken({
+        token: Buffer.from(sessionData.token, 'base64url')
       }));
       
       console.log("QR login status check result:", result);
       
-      // Если есть authorization, значит пользователь отсканировал QR код
+      // Если есть авторизация, значит пользователь отсканировал QR код
       // Используем any для обхода ограничений типизации
       const anyResult = result as any;
-      if (anyResult && anyResult.authorization) {
+      
+      // Проверяем, получили ли мы информацию о пользователе
+      if (anyResult && anyResult.user) {
         // Удаляем сессию QR
         qrLoginSessions.delete(token);
         
@@ -667,7 +671,8 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
       // Если нет ошибки, но и авторизации тоже нет - ждем сканирования
       return {
         success: false,
-        error: "Waiting for QR code scan"
+        waiting: true,
+        message: "Waiting for QR code scan"
       };
     } catch (error: any) {
       console.error("Error checking QR login status:", error);

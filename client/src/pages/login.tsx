@@ -24,7 +24,7 @@ enum AuthStep {
 
 export default function LoginPage() {
   // Хуки и состояния
-  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading, login } = useAuth();
+  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading, login, loginWithQR } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
   const { toast } = useToast();
