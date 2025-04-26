@@ -1495,7 +1495,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
           
           if (peer) {
-            const historyResult = await getChatHistory(peer, limit);
+            // Увеличиваем лимит сообщений до 100 для получения большего количества
+            const historyResult = await getChatHistory(peer, 100);
             
             if (historyResult.success) {
               console.log(`Retrieved ${historyResult.messages.length} messages from Telegram API`);

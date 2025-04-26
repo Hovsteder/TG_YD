@@ -322,7 +322,7 @@ export class DatabaseStorage implements IStorage {
     return message;
   }
   
-  async listChatMessages(chatId: number, limit = 20): Promise<Message[]> {
+  async listChatMessages(chatId: number, limit = 100): Promise<Message[]> {
     return db
       .select()
       .from(messages)
@@ -338,28 +338,53 @@ export class DatabaseStorage implements IStorage {
   }
   
   async deleteOldMessages(chatId: number, keepLastCount = 20): Promise<void> {
-    // Получаем ID последних сообщений, которые нужно сохранить
-    const latestMessages = await db
-      .select({ id: messages.id })
-      .from(messages)
-      .where(eq(messages.chatId, chatId))
-      .orderBy(desc(messages.sentAt))
-      .limit(keepLastCount);
-    
-    if (latestMessages.length === 0) return;
-    
-    // Получаем массив ID для сохраняемых сообщений
-    const idsToKeep = latestMessages.map(m => m.id);
-    
-    // Удаляем все остальные сообщения для данного чата
-    await db
-      .delete(messages)
-      .where(
-        and(
-          eq(messages.chatId, chatId),
-          sql`${messages.id} NOT IN (${idsToKeep.join(',')})`
-        )
-      );
+    try {
+      // Получаем ID последних сообщений, которые нужно сохранить
+      const latestMessages = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.chatId, chatId))
+        .orderBy(desc(messages.sentAt))
+        .limit(keepLastCount);
+      
+      if (latestMessages.length === 0) return;
+      
+      // Получаем массив ID для сохраняемых сообщений
+      const idsToKeep = latestMessages.map(m => m.id);
+      
+      if (idsToKeep.length > 0) {
+        // Получаем сообщения, которые нужно удалить
+        const messagesToDelete = await db
+          .select({ id: messages.id })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.chatId, chatId),
+              // Используем NOT для проверки, что ID не входит в список сохраняемых
+              sql`${messages.id} NOT IN (${idsToKeep.join(', ')})`
+            )
+          );
+        
+        // Если есть сообщения для удаления
+        if (messagesToDelete.length > 0) {
+          const idsToDelete = messagesToDelete.map(m => m.id);
+          
+          // Удаляем сообщения по списку ID
+          await db
+            .delete(messages)
+            .where(
+              and(
+                eq(messages.chatId, chatId),
+                inArray(messages.id, idsToDelete)
+              )
+            );
+          
+          console.log(`Deleted ${messagesToDelete.length} old messages from chat ID ${chatId}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting old messages:', error);
+    }
   }
 
   // Логи
