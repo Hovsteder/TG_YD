@@ -44,6 +44,27 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [tabValue, setTabValue] = useState("phone"); // Активная вкладка: phone или admin
   const [showQRCodeModal, setShowQRCodeModal] = useState(false); // Состояние для модального окна QR-кода
+  
+  // Обработчик успешного QR-входа
+  const handleQRLoginSuccess = (data: any) => {
+    // Закрываем модальное окно
+    setShowQRCodeModal(false);
+    
+    // Используем данные пользователя для входа
+    if (data.success && data.user && data.sessionToken) {
+      toast({
+        title: "Успешный вход",
+        description: "Вы успешно вошли через QR-код",
+      });
+      
+      // Перенаправляем на страницу админа или дашборда
+      if (data.user.isAdmin) {
+        navigate("/admin");
+      } else {
+        navigate("/dashboard");
+      }
+    }
+  };
 
   // Проверка авторизации
   useEffect(() => {
@@ -208,28 +229,7 @@ export default function LoginPage() {
     }
   };
   
-  // Обработчик успешного входа через QR-код
-  const handleQRLoginSuccess = (data: any) => {
-    // Проверяем, что данные успешны и содержат информацию о пользователе
-    if (data.success && data.user && data.sessionToken) {
-      // Показываем сообщение об успешном входе
-      toast({
-        title: "Успешный вход",
-        description: "Вы успешно вошли в систему через QR-код"
-      });
-      
-      // Перенаправляем пользователя на страницу чатов
-      // Примечание: перенаправление произойдет автоматически через useEffect,
-      // когда обновится состояние аутентификации
-    } else {
-      // Показываем сообщение об ошибке
-      toast({
-        variant: "destructive",
-        title: "Ошибка входа",
-        description: "Не удалось войти через QR-код"
-      });
-    }
-  };
+
 
   // Обработчик выбора страны
   const handleCountrySelect = (country: string, code: string) => {
