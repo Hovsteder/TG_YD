@@ -76,6 +76,12 @@ export default function SettingsForm() {
     
     setLoading(true);
     
+    // Показываем уведомление о проверке токена
+    toast({
+      title: "Проверка токена",
+      description: "Пожалуйста, подождите, идет проверка и инициализация бота с новым токеном...",
+    });
+    
     try {
       const response = await apiRequest(
         "POST", 
@@ -83,15 +89,16 @@ export default function SettingsForm() {
         {
           key: "telegram_bot_token",
           value: telegramBotToken,
-          description: "Токен бота Telegram для отправки 2FA кодов"
+          description: "Токен бота Telegram для отправки 2FA кодов и уведомлений"
         },
         headers
       );
       
       if (response.ok) {
+        // Предлагаем отправить тестовое сообщение для проверки
         toast({
-          title: "Успешно",
-          description: "Токен бота Telegram успешно обновлен",
+          title: "Токен успешно обновлен",
+          description: "Новый токен успешно сохранен и прошел проверку. Рекомендуем проверить работу отправкой тестового уведомления.",
         });
         
         // Обновляем кэш
@@ -102,8 +109,8 @@ export default function SettingsForm() {
       }
     } catch (error: any) {
       toast({
-        title: "Ошибка",
-        description: error.message || "Не удалось обновить токен бота",
+        title: "Ошибка при обновлении токена",
+        description: error.message || "Не удалось обновить токен бота. Убедитесь, что токен правильный и бот активен.",
         variant: "destructive",
       });
     } finally {
@@ -226,8 +233,19 @@ export default function SettingsForm() {
                     required
                   />
                   <p className="mt-1 text-sm text-gray-500">
-                    Токен используется для отправки 2FA кодов подтверждения пользователям.
+                    Токен используется для отправки 2FA кодов подтверждения пользователям и уведомлений администраторам.
+                    Чтобы получить токен, создайте нового бота у <a href="https://t.me/BotFather" target="_blank" className="text-blue-600 hover:underline">@BotFather</a> в Telegram.
                   </p>
+                  <div className="bg-blue-50 p-3 rounded-md mt-2 text-sm border border-blue-200">
+                    <p className="font-medium text-blue-800">Инструкция по созданию бота:</p>
+                    <ol className="list-decimal list-inside mt-1 text-blue-700 space-y-1">
+                      <li>Напишите /newbot в чате с @BotFather</li>
+                      <li>Введите название бота (например, "My App Bot")</li>
+                      <li>Введите имя пользователя бота, оно должно заканчиваться на "bot" (например, "my_app_bot")</li>
+                      <li>Скопируйте полученный токен и вставьте его в поле выше</li>
+                      <li>Напишите боту /start, чтобы активировать его</li>
+                    </ol>
+                  </div>
                 </div>
                 
                 <Button 
