@@ -778,7 +778,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Находим последнее сообщение
               let lastMessage = null;
               if (dialog.top_message) {
-                const message = dialogsResult.messages.find(m => m.id === dialog.top_message);
+                const message = dialogsResult.messages.find((m: any) => m.id === dialog.top_message);
                 if (message) {
                   lastMessage = {
                     id: message.id,
@@ -909,7 +909,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   
                   if (msg.from_id && msg.from_id._ === 'peerUser') {
                     const userId = msg.from_id.user_id;
-                    const sender = historyResult.users.find(u => u.id === userId);
+                    const sender = historyResult.users.find((u: any) => u.id === userId);
                     
                     if (sender) {
                       senderName = `${sender.first_name || ''} ${sender.last_name || ''}`.trim();
@@ -921,14 +921,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   const messageDate = new Date(msg.date * 1000);
                   
                   // Проверяем, существует ли сообщение с таким telegramId
-                  const messageId = `${chat.chatId}_${msg.id}`;
-                  const existingMessages = await db.select().from(messages)
-                    .where(eq(messages.telegramId, messageId));
+                  const telegramMsgId = `${chat.chatId}_${msg.id}`;
+                  const existingMessage = await storage.getMessageByTelegramId(telegramMsgId);
                   
-                  if (existingMessages.length === 0) {
+                  if (!existingMessage) {
                     const newMessage = await storage.createMessage({
                       chatId: chat.id,
-                      telegramId: messageId,
+                      telegramId: telegramMsgId,
                       senderId: senderId,
                       senderName: senderName,
                       text: msg.message,

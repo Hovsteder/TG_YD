@@ -278,12 +278,21 @@ export class DatabaseStorage implements IStorage {
     return newMessage;
   }
 
+  async getMessageByTelegramId(telegramId: string): Promise<Message | undefined> {
+    const [message] = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.telegramId, telegramId));
+    
+    return message;
+  }
+  
   async listChatMessages(chatId: number, limit = 20): Promise<Message[]> {
     return db
       .select()
       .from(messages)
       .where(eq(messages.chatId, chatId))
-      .orderBy(desc(messages.timestamp))
+      .orderBy(desc(messages.sentAt))
       .limit(limit);
   }
 
