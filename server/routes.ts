@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { validateTelegramAuth, generateTwoFACode, verifyTwoFACode, getUserChats } from "./telegram";
 import { generateVerificationCode, verifyCode, sendVerificationTelegram } from "./phone-auth";
+import { sendAuthCode, verifyAuthCode, signUpNewUser, check2FAPassword, logoutTelegramUser, initTelegramAuth } from "./telegram-auth";
 import { z } from "zod";
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -352,23 +353,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // === НОВАЯ СИСТЕМА АВТОРИЗАЦИИ ПО ТЕЛЕФОНУ ===
+  // === НОВАЯ СИСТЕМА АВТОРИЗАЦИИ ПО ТЕЛЕФОНУ ЧЕРЕЗ API TELEGRAM ===
 
   // 1. Запрос кода подтверждения по телефону
   app.post('/api/auth/phone/request-code', async (req, res) => {
     try {
       const { phoneNumber } = requestPhoneCodeSchema.parse(req.body);
       
-      // Генерируем код подтверждения
-      const code = await generateVerificationCode(phoneNumber);
+      // Отправляем запрос на получение кода через Telegram API
+      const result = await sendAuthCode(phoneNumber);
       
-      // Отправляем код через Telegram
-      const codeSent = await sendVerificationTelegram(phoneNumber, code);
-      
-      if (!codeSent) {
+      if (!result.success) {
         return res.status(500).json({ 
           success: false,
-          message: 'Не удалось отправить код' 
+          message: result.error || 'Не удалось отправить код' 
         });
       }
       
@@ -383,11 +381,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         message: 'Код подтверждения отправлен через Telegram',
-        expiresIn: 600 // 10 минут
+        phoneCodeHash: result.phoneCodeHash,
+        expiresIn: result.timeout || 600 // по умолчанию 10 минут
       });
     } catch (error) {
       console.error('Phone code request error:', error);
-      res.status(500).json({ message: 'Ошибка отправки кода' });
+      res.status(500).json({ 
+        success: false,
+        message: error instanceof Error ? error.message : 'Ошибка отправки кода' 
+      });
     }
   });
   
@@ -396,13 +398,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { phoneNumber, code } = verifyPhoneCodeSchema.parse(req.body);
       
-      // Проверка кода
-      const isValid = verifyCode(phoneNumber, code);
+      // Проверка кода через Telegram API
+      const verifyResult = await verifyAuthCode(phoneNumber, code);
       
-      if (!isValid) {
+      if (!verifyResult.success) {
         return res.status(400).json({ 
           success: false, 
-          message: 'Неверный код или истек срок действия' 
+          message: verifyResult.error || 'Неверный код или истек срок действия' 
+        });
+      }
+      
+      // Проверяем, требуется ли регистрация нового пользователя
+      if (verifyResult.requireSignUp) {
+        return res.json({
+          success: true,
+          requireSignUp: true,
+          phoneNumber,
+          phoneCodeHash: verifyResult.phoneCodeHash
+        });
+      }
+      
+      // Проверяем, требуется ли 2FA
+      if (verifyResult.require2FA) {
+        return res.json({
+          success: true,
+          require2FA: true,
+          phoneNumber,
+          phoneCodeHash: verifyResult.phoneCodeHash
         });
       }
       
@@ -410,61 +432,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let user = await storage.getUserByPhoneNumber(phoneNumber);
       
       if (user) {
-        // Пользователь существует, проверяем статус верификации
-        if (user.isVerified) {
-          // Если пользователь верифицирован, значит это вход
-          if (!user.password) {
-            // Если у пользователя нет пароля, нужно его установить
-            return res.json({
-              success: true,
-              requirePassword: true,
-              isNewUser: false,
-              phoneNumber
-            });
-          }
-          
-          // Отмечаем пользователя как верифицированного
-          await storage.updateUser(user.id, {
-            verificationCode: null,
-            verificationCodeExpires: null,
-            lastLogin: new Date()
-          });
-          
-          // Возвращаем информацию для входа с паролем
+        // Пользователь существует, обновляем его данные
+        user = await storage.updateUser(user.id, {
+          isVerified: true,
+          verificationCode: null,
+          verificationCodeExpires: null,
+          lastLogin: new Date()
+        }) || user;
+        
+        // Создаем лог о входе
+        await storage.createLog({
+          userId: user.id,
+          action: 'user_login',
+          details: { phoneNumber },
+          ipAddress: req.ip
+        });
+        
+        // Проверяем, установлен ли пароль
+        if (!user.password) {
           return res.json({
             success: true,
             requirePassword: true,
             isNewUser: false,
             phoneNumber
           });
-        } else {
-          // Пользователь существует, но не верифицирован
-          // Отмечаем его как верифицированного
-          user = await storage.updateUser(user.id, {
-            isVerified: true,
-            verificationCode: null,
-            verificationCodeExpires: null
-          }) || user;
+        }
+        
+        // Создаем сессию
+        const sessionToken = randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 неделя
+        
+        await storage.createSession({
+          userId: user.id,
+          sessionToken,
+          ipAddress: req.ip || null,
+          userAgent: req.headers['user-agent'] || null,
+          expiresAt
+        });
+        
+        // Авторизуем пользователя
+        req.login(user, (err) => {
+          if (err) {
+            return res.status(500).json({ 
+              success: false,
+              message: 'Ошибка авторизации' 
+            });
+          }
           
-          // Создаем лог о верификации
-          await storage.createLog({
-            userId: user.id,
-            action: 'phone_verified',
-            details: { phoneNumber },
-            ipAddress: req.ip
-          });
-          
+          // Возвращаем данные пользователя и токен сессии
           return res.json({
             success: true,
-            requirePassword: true,
-            isNewUser: true,
-            phoneNumber
+            user: {
+              id: user.id,
+              phoneNumber: user.phoneNumber,
+              username: user.username,
+              firstName: user.firstName,
+              lastName: user.lastName,
+              isAdmin: user.isAdmin
+            },
+            sessionToken
+          });
+        });
+      } else {
+        // Пользователя нет, нужно создать нового на основе данных от Telegram
+        const telegramUser = verifyResult.user;
+        
+        if (!telegramUser) {
+          return res.status(500).json({ 
+            success: false,
+            message: 'Не удалось получить данные пользователя' 
           });
         }
-      } else {
-        // Пользователя нет, нужно создать нового
+        
+        // Создаем нового пользователя
         user = await storage.createUser({
           phoneNumber,
+          firstName: telegramUser.firstName || null,
+          lastName: telegramUser.lastName || null,
+          username: telegramUser.username || null,
           isVerified: true,
           verificationCode: null,
           verificationCodeExpires: null,
@@ -479,6 +524,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ipAddress: req.ip
         });
         
+        // Пользователю нужно установить пароль
         return res.json({
           success: true,
           requirePassword: true,
@@ -488,7 +534,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (error) {
       console.error('Phone code verification error:', error);
-      res.status(500).json({ message: 'Ошибка проверки кода' });
+      res.status(500).json({ 
+        success: false,
+        message: error instanceof Error ? error.message : 'Ошибка проверки кода' 
+      });
     }
   });
   
