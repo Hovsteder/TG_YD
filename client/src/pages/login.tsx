@@ -24,7 +24,7 @@ enum AuthStep {
 
 export default function LoginPage() {
   // Хуки и состояния
-  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading } = useAuth();
+  const { requestPhoneCode, verifyPhoneCode, setupPassword, loginWithPassword, isAuthenticated, loading, login } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -46,12 +46,15 @@ export default function LoginPage() {
   const [showQRCodeModal, setShowQRCodeModal] = useState(false); // Состояние для модального окна QR-кода
   
   // Обработчик успешного QR-входа
-  const handleQRLoginSuccess = (data: any) => {
+  const handleQRLoginSuccess = async (data: any) => {
     // Закрываем модальное окно
     setShowQRCodeModal(false);
     
     // Используем данные пользователя для входа
     if (data.success && data.user && data.sessionToken) {
+      // Сохраняем данные пользователя и токен сессии в контекст авторизации
+      await login(data);
+      
       toast({
         title: "Успешный вход",
         description: "Вы успешно вошли через QR-код",
@@ -61,7 +64,7 @@ export default function LoginPage() {
       if (data.user.isAdmin) {
         navigate("/admin");
       } else {
-        navigate("/dashboard");
+        navigate("/chats");
       }
     }
   };
