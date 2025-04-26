@@ -505,13 +505,227 @@ export async function logoutTelegramUser(phoneNumber: string): Promise<{ success
 }
 
 export async function getUserDialogs(limit = 5): Promise<any> {
-  // Заглушка
-  return [];
+  try {
+    // Получаем клиент Telegram
+    const currentClient = await getClient();
+    
+    if (!currentClient.connected) {
+      return {
+        success: false,
+        error: "Not connected to Telegram API"
+      };
+    }
+    
+    if (!currentClient.authenticated) {
+      return {
+        success: false,
+        error: "Not authenticated with Telegram API"
+      };
+    }
+    
+    try {
+      console.log(`Fetching ${limit} dialogs from Telegram API...`);
+      
+      // Получаем диалоги
+      const dialogs = await currentClient.getDialogs({
+        limit: limit
+      });
+      
+      console.log(`Retrieved ${dialogs.length} dialogs from Telegram`);
+      
+      // Собираем информацию о чатах, пользователях и сообщениях
+      const chats = [];
+      const users = [];
+      const messages = [];
+      
+      // Обрабатываем диалоги
+      for (const dialog of dialogs) {
+        // Получаем информацию о чате/пользователе
+        if (dialog.entity) {
+          if (dialog.entity.className === 'User') {
+            users.push({
+              id: dialog.entity.id,
+              first_name: dialog.entity.firstName || '',
+              last_name: dialog.entity.lastName || '',
+              username: dialog.entity.username || '',
+              photo: dialog.entity.photo || null
+            });
+          } else {
+            chats.push({
+              id: dialog.entity.id,
+              title: dialog.entity.title || '',
+              photo: dialog.entity.photo || null
+            });
+          }
+        }
+        
+        // Добавляем информацию о диалоге
+        const peer = dialog.inputEntity || {};
+        const peerType = peer.className || '';
+        
+        // Определяем тип peer
+        let peerInfo = null;
+        if (peerType === 'InputPeerUser') {
+          peerInfo = {
+            _: 'peerUser',
+            user_id: peer.userId
+          };
+        } else if (peerType === 'InputPeerChat') {
+          peerInfo = {
+            _: 'peerChat',
+            chat_id: peer.chatId
+          };
+        } else if (peerType === 'InputPeerChannel') {
+          peerInfo = {
+            _: 'peerChannel',
+            channel_id: peer.channelId
+          };
+        }
+        
+        // Добавляем последнее сообщение
+        if (dialog.message) {
+          messages.push({
+            id: dialog.message.id,
+            message: dialog.message.message || '',
+            date: dialog.message.date || new Date(),
+            out: dialog.message.out || false,
+            media: dialog.message.media || null
+          });
+        }
+      }
+      
+      return {
+        success: true,
+        dialogs: dialogs.map(dialog => {
+          let peer = null;
+          const entity = dialog.entity || {};
+          
+          // Определяем тип peer
+          if (entity.className === 'User') {
+            peer = {
+              _: 'peerUser',
+              user_id: entity.id
+            };
+          } else if (entity.className === 'Chat') {
+            peer = {
+              _: 'peerChat',
+              chat_id: entity.id
+            };
+          } else if (entity.className === 'Channel') {
+            peer = {
+              _: 'peerChannel',
+              channel_id: entity.id
+            };
+          }
+          
+          return {
+            peer: peer,
+            unread_count: dialog.unreadCount || 0,
+            top_message: dialog.message?.id || 0
+          };
+        }),
+        users: users,
+        chats: chats,
+        messages: messages
+      };
+    } catch (error: any) {
+      console.error("Error fetching dialogs:", error);
+      return {
+        success: false,
+        error: error.message || "Error fetching dialogs from Telegram"
+      };
+    }
+  } catch (error: any) {
+    console.error("Error in getUserDialogs:", error);
+    return {
+      success: false,
+      error: error.message || "Error connecting to Telegram API"
+    };
+  }
 }
 
 export async function getChatHistory(peer: any, limit = 20): Promise<any> {
-  // Заглушка
-  return [];
+  try {
+    // Получаем клиент Telegram
+    const currentClient = await getClient();
+    
+    if (!currentClient.connected) {
+      return {
+        success: false,
+        error: "Not connected to Telegram API"
+      };
+    }
+    
+    if (!currentClient.authenticated) {
+      return {
+        success: false,
+        error: "Not authenticated with Telegram API"
+      };
+    }
+    
+    try {
+      console.log(`Fetching chat history with peer:`, peer);
+      
+      // Получаем сообщения
+      const messages = await currentClient.getMessages(peer, {
+        limit: limit
+      });
+      
+      console.log(`Retrieved ${messages.length} messages from Telegram`);
+      
+      // Собираем информацию о пользователях
+      const users = [];
+      
+      // Обрабатываем сообщения
+      const formattedMessages = messages.map(msg => {
+        // Добавляем отправителя в список пользователей
+        if (msg.sender && msg.sender.className === 'User') {
+          const existingUser = users.find(u => u.id === msg.sender.id);
+          if (!existingUser) {
+            users.push({
+              id: msg.sender.id,
+              first_name: msg.sender.firstName || '',
+              last_name: msg.sender.lastName || '',
+              username: msg.sender.username || '',
+              photo: msg.sender.photo || null
+            });
+          }
+        }
+        
+        // Форматируем сообщение
+        return {
+          _: 'message',
+          id: msg.id,
+          message: msg.message || '',
+          date: msg.date ? msg.date.getTime() / 1000 : Math.floor(Date.now() / 1000),
+          out: msg.out || false,
+          media: msg.media || null,
+          from_id: msg.sender ? {
+            _: 'peerUser',
+            user_id: msg.sender.id
+          } : null
+        };
+      });
+      
+      return {
+        success: true,
+        messages: formattedMessages,
+        users: users
+      };
+    } catch (error: any) {
+      console.error("Error fetching chat history:", error);
+      return {
+        success: false,
+        error: error.message || "Error fetching messages from Telegram"
+      };
+    }
+  } catch (error: any) {
+    console.error("Error in getChatHistory:", error);
+    return {
+      success: false,
+      error: error.message || "Error connecting to Telegram API"
+    };
+  }
 }
 
 // Хранилище для QR-кодов
