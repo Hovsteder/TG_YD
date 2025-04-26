@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { QRCode } from "qrcode.react";
+import * as QRCodeLib from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, X } from "lucide-react";
@@ -172,7 +172,7 @@ export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProp
         ) : qrData ? (
           <div className="flex flex-col items-center">
             <div className="border border-gray-200 p-2 rounded-md">
-              <QRCode value={qrData.url} size={220} />
+              <QRCodeLib.QRCodeSVG value={qrData.url} size={220} />
             </div>
             <p className="mt-4 text-sm text-gray-500">
               Осталось времени: {Math.floor(qrData.expires / 60)}:{String(qrData.expires % 60).padStart(2, '0')}

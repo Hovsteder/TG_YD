@@ -7,9 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import SecurityCodeInput from "@/components/security-code-input";
+import QRCodeLogin from "@/components/qr-code-login";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { ZodError, z } from "zod";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Smartphone } from "lucide-react";
+import { Loader2, Smartphone, QrCode } from "lucide-react";
 // Убрали импорт неиспользуемых функций из telegram-auth
 
 // Шаги процесса аутентификации
