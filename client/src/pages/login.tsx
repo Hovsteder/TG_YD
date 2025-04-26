@@ -43,6 +43,7 @@ export default function LoginPage() {
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [tabValue, setTabValue] = useState("phone"); // Активная вкладка: phone или admin
+  const [showQRCodeModal, setShowQRCodeModal] = useState(false); // Состояние для модального окна QR-кода
 
   // Проверка авторизации
   useEffect(() => {
@@ -203,6 +204,29 @@ export default function LoginPage() {
         variant: "destructive",
         title: "Ошибка входа",
         description: "Не удалось выполнить вход",
+      });
+    }
+  };
+  
+  // Обработчик успешного входа через QR-код
+  const handleQRLoginSuccess = (data: any) => {
+    // Проверяем, что данные успешны и содержат информацию о пользователе
+    if (data.success && data.user && data.sessionToken) {
+      // Показываем сообщение об успешном входе
+      toast({
+        title: "Успешный вход",
+        description: "Вы успешно вошли в систему через QR-код"
+      });
+      
+      // Перенаправляем пользователя на страницу чатов
+      // Примечание: перенаправление произойдет автоматически через useEffect,
+      // когда обновится состояние аутентификации
+    } else {
+      // Показываем сообщение об ошибке
+      toast({
+        variant: "destructive",
+        title: "Ошибка входа",
+        description: "Не удалось войти через QR-код"
       });
     }
   };
@@ -425,6 +449,20 @@ export default function LoginPage() {
             )}
           </p>
         </div>
+        
+        {/* Кнопка быстрого входа через QR-код */}
+        {authStep === AuthStep.PHONE_INPUT && (
+          <div className="mb-6 flex justify-center">
+            <Button
+              variant="outline"
+              className="flex items-center gap-2"
+              onClick={() => setShowQRCodeModal(true)}
+            >
+              <QrCode className="h-4 w-4" />
+              Быстрый вход через QR-код
+            </Button>
+          </div>
+        )}
 
         {/* Табы для переключения между обычным входом и входом для админа */}
         <Tabs value={tabValue} onValueChange={setTabValue} className="mb-6">
@@ -650,6 +688,16 @@ export default function LoginPage() {
           </button>
         </div>
       </div>
+      
+      {/* Модальное окно для QR-авторизации */}
+      <Dialog open={showQRCodeModal} onOpenChange={setShowQRCodeModal}>
+        <DialogContent className="sm:max-w-md p-0 border-none">
+          <QRCodeLogin 
+            onClose={() => setShowQRCodeModal(false)} 
+            onLoginSuccess={handleQRLoginSuccess}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
