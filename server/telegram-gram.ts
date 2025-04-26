@@ -635,13 +635,15 @@ export async function checkQRLoginStatus(token: string): Promise<VerifyResult> {
       console.log("QR login status check result:", result);
       
       // Если есть authorization, значит пользователь отсканировал QR код
-      if (result && result.authorization) {
+      // Используем any для обхода ограничений типизации
+      const anyResult = result as any;
+      if (anyResult && anyResult.authorization) {
         // Удаляем сессию QR
         qrLoginSessions.delete(token);
         
         // Обрабатываем информацию о пользователе
-        if (result.authorization.user) {
-          const userInfo = result.authorization.user;
+        if (anyResult.authorization.user) {
+          const userInfo = anyResult.authorization.user;
           return {
             success: true,
             user: {

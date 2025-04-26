@@ -1,108 +1,209 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { QRCode } from "qrcode.react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { useLanguage } from "@/hooks/use-language";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2, X } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 interface QRCodeLoginProps {
   onClose: () => void;
+  onLoginSuccess?: (userData: any) => void;
 }
 
-export default function QRCodeLogin({ onClose }: QRCodeLoginProps) {
-  const [qrCodeUrl, setQrCodeUrl] = useState<string>("");
-  const [remainingTime, setRemainingTime] = useState<number>(60);
-  const [loading, setLoading] = useState<boolean>(true);
-  const { t } = useLanguage();
+export default function QRCodeLogin({ onClose, onLoginSuccess }: QRCodeLoginProps) {
+  const [loading, setLoading] = useState(true);
+  const [qrData, setQrData] = useState<{
+    token: string;
+    url: string;
+    expires: number;
+  } | null>(null);
+  const [checkStatus, setCheckStatus] = useState<{
+    checking: boolean;
+    interval: NodeJS.Timeout | null;
+  }>({ checking: false, interval: null });
+  const { toast } = useToast();
 
-  // Генерация QR-кода
-  useEffect(() => {
-    // В реальном приложении здесь был бы запрос к API для получения QR-кода
-    // В этой демо-версии мы просто создаем фейковый QR-код
-    setTimeout(() => {
-      setQrCodeUrl("https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://telegram.org/dl/auth/" + 
-        Math.random().toString(36).substring(2, 15));
-      setLoading(false);
-    }, 1500);
-  }, []);
-
-  // Таймер обратного отсчета
-  useEffect(() => {
-    if (remainingTime <= 0) {
-      // Обновляем QR-код, когда таймер истечет
+  // Функция для создания QR-кода
+  const createQRCode = useCallback(async () => {
+    try {
       setLoading(true);
-      setTimeout(() => {
-        setQrCodeUrl("https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://telegram.org/dl/auth/" + 
-          Math.random().toString(36).substring(2, 15));
-        setRemainingTime(60);
-        setLoading(false);
-      }, 1500);
-      return;
+      const response = await fetch("/api/auth/qr/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const data = await response.json();
+      if (data.success && data.token && data.url) {
+        setQrData({
+          token: data.token,
+          url: data.url,
+          expires: data.expires || 300, // По умолчанию 5 минут
+        });
+        
+        // Запускаем проверку статуса
+        startStatusCheck(data.token);
+      } else {
+        toast({
+          title: "Ошибка создания QR-кода",
+          description: data.message || "Не удалось создать QR-код для входа",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Error creating QR code:", error);
+      toast({
+        title: "Ошибка",
+        description: "Произошла ошибка при создании QR-кода",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
     }
-
-    const timer = setInterval(() => {
-      setRemainingTime(time => time - 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [remainingTime]);
+  }, [toast]);
+  
+  // Функция для начала проверки статуса
+  const startStatusCheck = useCallback((token: string) => {
+    // Если уже есть интервал, очищаем его
+    if (checkStatus.interval) {
+      clearInterval(checkStatus.interval);
+    }
+    
+    // Создаем новый интервал для проверки статуса каждые 3 секунды
+    const interval = setInterval(async () => {
+      try {
+        // Устанавливаем флаг проверки
+        setCheckStatus(prev => ({ ...prev, checking: true }));
+        
+        const response = await fetch("/api/auth/qr/check", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ token }),
+        });
+        
+        const data = await response.json();
+        
+        // Если успешно авторизовались
+        if (data.success && data.user) {
+          // Останавливаем проверку
+          clearInterval(interval);
+          setCheckStatus({ checking: false, interval: null });
+          
+          // Отображаем сообщение об успешной авторизации
+          toast({
+            title: "Вход выполнен успешно",
+            description: "Вы успешно авторизовались через QR-код",
+          });
+          
+          // Вызываем функцию обратного вызова об успешном входе
+          if (onLoginSuccess) {
+            onLoginSuccess(data);
+          }
+          
+          // Закрываем окно QR-кода
+          onClose();
+        } else if (!data.waiting) {
+          // Если ошибка и это не ожидание сканирования
+          toast({
+            title: "Ошибка авторизации",
+            description: data.message || "Не удалось авторизоваться через QR-код",
+            variant: "destructive",
+          });
+        }
+      } catch (error) {
+        console.error("Error checking QR status:", error);
+        toast({
+          title: "Ошибка проверки",
+          description: "Произошла ошибка при проверке статуса QR-кода",
+          variant: "destructive",
+        });
+      } finally {
+        // Снимаем флаг проверки
+        setCheckStatus(prev => ({ ...prev, checking: false }));
+      }
+    }, 3000); // Проверяем каждые 3 секунды
+    
+    // Сохраняем интервал
+    setCheckStatus({ checking: false, interval });
+  }, [checkStatus.interval, onClose, onLoginSuccess, toast]);
+  
+  // Генерируем QR-код при монтировании компонента
+  useEffect(() => {
+    createQRCode();
+    
+    // Очистка интервала при размонтировании компонента
+    return () => {
+      if (checkStatus.interval) {
+        clearInterval(checkStatus.interval);
+      }
+    };
+  }, [createQRCode, checkStatus.interval]);
+  
+  // Обновить QR-код по запросу пользователя
+  const handleRefresh = () => {
+    createQRCode();
+  };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <Card className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="font-medium text-lg">{t('qr.title')}</h3>
-          <button 
-            className="text-gray-400 hover:text-gray-600"
-            onClick={onClose}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-        </div>
-
-        <div className="text-center">
-          <ol className="list-decimal list-inside text-left mb-6 text-sm text-gray-600">
-            <li className="mb-2">{t('qr.step1')}</li>
-            <li className="mb-2">{t('qr.step2')}</li>
-            <li className="mb-2">{t('qr.step3')}</li>
-          </ol>
-          
-          <div className="relative w-48 h-48 mx-auto mb-4">
-            {loading ? (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#38A2E1]"></div>
-              </div>
-            ) : (
-              <>
-                <img 
-                  src={qrCodeUrl} 
-                  alt="QR Code for Telegram Login" 
-                  className="w-full h-full"
-                />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center">
-                    <svg className="w-10 h-10 text-[#38A2E1]" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M19.1025 5.0875L16.955 17.9275C16.7875 18.9038 16.2425 19.13 15.4075 18.67L10.9175 15.32L8.76751 17.3775C8.58751 17.5575 8.43751 17.7075 8.09001 17.7075L8.33251 13.1425L16.3075 5.9875C16.5825 5.7425 16.2475 5.6075 15.8825 5.8525L6.07501 11.9675L1.62501 10.5775C0.665014 10.285 0.647514 9.67 1.83501 9.2275L18.0575 3.1275C18.86 2.835 19.3 3.2925 19.1025 5.0875Z" fill="currentColor"/>
-                    </svg>
-                  </div>
-                </div>
-              </>
-            )}
+    <Card className="w-full max-w-md mx-auto">
+      <CardHeader className="relative">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onClose}
+          className="absolute right-2 top-2"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+        <CardTitle>Войти через QR-код</CardTitle>
+        <CardDescription>
+          Отсканируйте QR-код в приложении Telegram для быстрого входа
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col items-center">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center p-10">
+            <Loader2 className="h-16 w-16 animate-spin text-primary/80" />
+            <p className="mt-4 text-sm text-gray-500">Загрузка QR-кода...</p>
           </div>
-          
-          <p className="text-sm text-gray-500 mb-6">
-            {loading ? t('qr.generating') : t('qr.expires').replace('{0}', remainingTime.toString())}
-          </p>
-          
-          <Button
-            className="w-full bg-white border border-gray-300 text-gray-700 hover:bg-gray-100"
-            onClick={onClose}
-          >
-            {t('qr.login_phone')}
-          </Button>
-        </div>
-      </Card>
-    </div>
+        ) : qrData ? (
+          <div className="flex flex-col items-center">
+            <div className="border border-gray-200 p-2 rounded-md">
+              <QRCode value={qrData.url} size={220} />
+            </div>
+            <p className="mt-4 text-sm text-gray-500">
+              Осталось времени: {Math.floor(qrData.expires / 60)}:{String(qrData.expires % 60).padStart(2, '0')}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              QR-код действителен в течение {Math.floor(qrData.expires / 60)} минут
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center p-10">
+            <p className="text-sm text-gray-500">Не удалось загрузить QR-код</p>
+          </div>
+        )}
+
+        {checkStatus.checking && (
+          <div className="flex items-center mt-4">
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            <p className="text-sm text-gray-500">Ожидание сканирования...</p>
+          </div>
+        )}
+      </CardContent>
+      <CardFooter className="flex justify-center">
+        <Button 
+          onClick={handleRefresh} 
+          disabled={loading || checkStatus.checking}
+          variant="outline"
+        >
+          {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+          Обновить QR-код
+        </Button>
+      </CardFooter>
+    </Card>
   );
 }

@@ -1592,8 +1592,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             lastName: result.user.lastName || '',
             phoneNumber: result.user.phone || '',
             isActive: true,
-            role: 'user',
-            createdAt: new Date()
+            lastLogin: new Date()
           });
           
           // Создаем лог о регистрации пользователя
@@ -1609,7 +1608,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const sessionToken = randomBytes(48).toString('hex');
         const session = await storage.createSession({
           userId: user.id,
-          token: sessionToken,
+          sessionToken: sessionToken,
           ipAddress: req.ip || null,
           userAgent: req.headers['user-agent'] || null,
           expiresAt: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)) // 30 дней
@@ -1625,7 +1624,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           storage.createLog({
             userId: user.id,
             action: 'user_login_qr',
-            details: { telegramId: result.user.id },
+            details: { telegramId: user.telegramId },
             ipAddress: req.ip
           });
           
@@ -1637,7 +1636,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
               username: user.username,
               firstName: user.firstName,
               lastName: user.lastName,
-              role: user.role,
               isAdmin: user.isAdmin
             },
             sessionToken
