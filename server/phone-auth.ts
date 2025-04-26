@@ -101,12 +101,46 @@ export async function sendVerificationSMS(phoneNumber: string, code: string): Pr
       // что не всегда возможно напрямую через Bot API.
       // В реальном приложении здесь можно использовать MTProto API.
       
-      // Временное решение для тестирования - ищем пользователей с telegramId
-      const allAdmins = await storage.listAdmins();
-      for (const admin of allAdmins) {
-        if (admin.telegramId) {
-          await botInstance.api.sendMessage(admin.telegramId, 
-            `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`);
+      // Пытаемся получить настройку для чата админа
+      const adminChatId = await storage.getSettingValue("admin_chat_id");
+      
+      // Если настройка есть и это валидный числовой ID, отправляем туда
+      if (adminChatId && !isNaN(Number(adminChatId))) {
+        try {
+          await botInstance.api.sendMessage(adminChatId, 
+            `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`, 
+            { parse_mode: "Markdown" });
+          console.log(`Verification code sent to admin chat: ${adminChatId}`);
+        } catch (err) {
+          console.error("Failed to send code to admin chat:", err);
+        }
+      } else {
+        // Если нет настройки, используем проактивный поиск админов с правильными telegramId
+        try {
+          // Временное решение для тестирования - ищем пользователей с telegramId
+          const allAdmins = await storage.listAdmins();
+          let codeSent = false;
+          
+          for (const admin of allAdmins) {
+            // Проверяем, что telegramId это числовое значение или начинается с цифры
+            // (легитимные Telegram ID не могут начинаться с букв)
+            if (admin.telegramId && /^\d/.test(admin.telegramId)) {
+              try {
+                await botInstance.api.sendMessage(admin.telegramId, 
+                  `🔔 Новый запрос кода подтверждения\n\nНомер: ${phoneNumber}\nКод: ${code}`);
+                codeSent = true;
+                console.log(`Verification code sent to admin: ${admin.username} (${admin.telegramId})`);
+              } catch (err) {
+                console.error(`Failed to send code to admin ${admin.username}:`, err);
+              }
+            }
+          }
+          
+          if (!codeSent) {
+            console.log("Could not find any admin with valid Telegram ID. Code was not sent.");
+          }
+        } catch (err) {
+          console.error("Error while searching for admins:", err);
         }
       }
       
