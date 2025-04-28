@@ -330,15 +330,14 @@ export async function sendAuthCode(db: DbInstance, phoneNumber: string): Promise
     try {
       console.log(`Sending auth code to ${phoneNumber} with apiId: ${apiId}`);
       
-      // Отправляем код через Telegram API в формате GramJS с расширенными настройками
+      // Отправляем код через Telegram API, оптимизируем для получения через приложение Telegram
       const settings = new Api.CodeSettings({
-        allowFlashcall: true,        // Разрешаем верификацию через звонок
         currentNumber: true,         // Используем текущий номер
         allowAppHash: true,          // Разрешаем использование app hash
-        allowMissedCall: true,       // Разрешаем пропущенные звонки
+        allowFlashcall: false,       // Отключаем верификацию через звонок
+        allowMissedCall: false,      // Отключаем пропущенные звонки
         logoutTokens: [],            // Токены выхода (пустой массив)
-        // Добавляем дополнительные флаги
-        allowFirebase: true,         // Разрешаем использование firebase (если поддерживается)
+        allowFirebase: false,        // Отключаем использование firebase
       });
       
       console.log("Using code settings:", JSON.stringify(settings, null, 2));
@@ -379,28 +378,9 @@ export async function sendAuthCode(db: DbInstance, phoneNumber: string): Promise
             codeType = 'call';
           }
           
-          // Если тип кода - через приложение, пытаемся также запросить код через SMS
+          // Отключаем дополнительную отправку кода через SMS, так как это приводит к ошибкам
           if (anyResult.type.className === 'auth.SentCodeTypeApp') {
-            try {
-              console.log("Attempting to resend code via SMS...");
-              
-              // Пробуем повторно запросить код, но через SMS
-              setTimeout(async () => {
-                try {
-                  // Используем тот же currentClient
-                  const resendResult = await currentClient.invoke(new Api.auth.ResendCode({
-                    phoneNumber: phoneNumber,
-                    phoneCodeHash: phoneCodeHash
-                  }));
-                  console.log("Resend code via SMS result:", resendResult);
-                } catch (resendError) {
-                  console.error("Error resending code via SMS:", resendError);
-                }
-              }, 1000); // Задержка в 1 секунду
-            } catch (smsError) {
-              console.error("Error requesting SMS code:", smsError);
-              // Не выбрасываем ошибку, чтобы не прерывать основной поток
-            }
+            console.log("Code will be delivered via Telegram app only. SMS delivery is disabled.");
           }
         }
         

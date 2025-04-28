@@ -628,10 +628,10 @@ export async function registerRoutes(app: Express, /* storage: IStorage */): Pro
       
       const responseMsg = {
         success: true,
-        message: 'Код подтверждения отправлен через Telegram',
+        message: 'Код подтверждения отправлен через приложение Telegram',
         phoneCodeHash: result.phoneCodeHash,
         expiresIn: result.timeout || 600, // по умолчанию 10 минут
-        codeDeliveryType: 'app' // По умолчанию через приложение
+        codeDeliveryType: 'app' // Только через приложение, SMS отключен
       };
       
       // Добавляем информацию о способе доставки кода, если она доступна
