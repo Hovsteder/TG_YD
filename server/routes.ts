@@ -628,7 +628,7 @@ export async function registerRoutes(app: Express, /* storage: IStorage */): Pro
       
       const responseMsg = {
         success: true,
-        message: 'Код подтверждения отправлен через приложение Telegram',
+        message: 'Код подтверждения отправлен через приложение Telegram. Пожалуйста, проверьте официальное приложение Telegram на вашем устройстве.',
         phoneCodeHash: result.phoneCodeHash,
         expiresIn: result.timeout || 600, // по умолчанию 10 минут
         codeDeliveryType: 'app' // Только через приложение, SMS отключен
